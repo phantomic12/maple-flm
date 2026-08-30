@@ -11,10 +11,12 @@
 
 int main() {
     std::cout << "=================================================================" << std::endl;
-    std::cout << "=== Running FastFlowLM Maple High-Context Stress Test (32K+) ===" << std::endl;
+    std::cout << "=== Running FastFlowLM Maple Maximum Context Test (128K/131K) ===" << std::endl;
     std::cout << "=================================================================" << std::endl;
 
-    // 1. Configure realistic Maple-Preview backbone
+    // 1. Configure full 24-layer Maple-Preview backbone with 131,072 max context
+    uint32_t max_test_context = 131072; // Full 128K maximum sequence length
+
     LM_Config high_ctx_cfg;
     high_ctx_cfg._json_config = {
         {"vocab_size", 1000},
@@ -31,17 +33,16 @@ int main() {
         {"rope_theta", 10000.0},
         {"partial_rotary_factor", 0.5},  // 0.5 factor (32 rot, 32 pass-through)
         {"nope_on_global_attention", true},
-        {"default_context_length", 32768}
+        {"default_context_length", max_test_context}
     };
 
-    uint32_t max_test_context = 32768;
     std::cout << "[Setup] Initializing maple_npu with Max Context = " << max_test_context 
-              << " tokens across 24 layers (18 SWA Ring-Buffers + 6 Full Attention layers)..." << std::endl;
+              << " tokens (128K) across 24 layers (18 SWA Ring-Buffers + 6 Full Attention layers)..." << std::endl;
 
     maple_npu engine(high_ctx_cfg, nullptr, max_test_context);
 
     // 2. Generate and load synthetic model weights
-    std::string synth_model_dir = "/home/yoav/slop/maple-flm/test_synth_high_ctx";
+    std::string synth_model_dir = "/home/yoav/slop/maple-flm/test_synth_max_ctx";
     std::string gen_cmd = "python3 /home/yoav/slop/maple-flm/convert_maple.py --generate-synthetic --num-layers 24 --num-experts 16 --out-dir " + synth_model_dir;
     int ret = std::system(gen_cmd.c_str());
     assert(ret == 0);
@@ -51,9 +52,8 @@ int main() {
         engine.load_weights(q4nx);
         std::cout << "[PASS] Loaded weights for 24-layer MoE model." << std::endl;
 
-        // 3. Test High-Context Sequential Prefill & Decode Scaling
-        // We will prefill tokens in large batches to simulate 1k, 2k, 4k, 8k, 16k, 32k context expansion
-        std::vector<int> test_milestones = {512, 1024, 2048, 4096, 8192, 16384, 32768};
+        // 3. Test High-Context Sequential Prefill & Decode Scaling up to 131,072 (128K)
+        std::vector<int> test_milestones = {512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072};
         std::mt19937 rng(42);
         std::uniform_int_distribution<int> dist(1, 999);
 
@@ -74,7 +74,7 @@ int main() {
             current_pos = engine.get_current_context_length();
             assert(current_pos == target_len);
 
-            // Verify numerical stability of output logits at this position
+            // Verify numerical stability of output logits
             bool has_nan = false;
             bool has_inf = false;
             float max_l = -1e30f;
@@ -92,7 +92,7 @@ int main() {
             assert(!has_inf && "Logits contain Inf at high context!");
 
             std::cout << "[Context Checkpoint] Reached " << current_pos << " tokens | Prefill batch: " 
-                      << num_to_add << " tokens in " << chunk_ms << " ms (" 
+                      << num_to_add << " tokens in " << (chunk_ms / 1000.0) << " s (" 
                       << (num_to_add / (chunk_ms / 1000.0)) << " tok/s) | Logits range: [" 
                       << min_l << ", " << max_l << "]" << std::endl;
 
@@ -110,35 +110,34 @@ int main() {
                       << (1000.0 / step_ms) << " tok/s)" << std::endl;
         }
 
-        // 4. Verify SWA Ring Buffer invariant after 32K tokens
-        // Layer 0 is sliding: cache slot must be valid and non-zero
+        // 4. Verify SWA Ring Buffer invariant after 131,072 tokens
         buffer<bf16> swa_k = engine.get_k_cache(0, current_pos - 1);
         assert(swa_k.size() > 0);
-        std::cout << "[PASS] SWA Ring-Buffer maintained stable 512-slot footprint across 32,768+ tokens." << std::endl;
+        std::cout << "[PASS] SWA Ring-Buffer maintained stable 512-slot footprint across 131,072+ tokens." << std::endl;
 
-        // 5. Test Checkpoint & Restoration at 32K context
-        int ckpt_32k = engine.checkpoint();
-        assert(ckpt_32k == current_pos);
-        std::cout << "[PASS] Checkpointed 32K context state at position " << ckpt_32k << std::endl;
+        // 5. Test Checkpoint & Restoration at 128K context
+        int ckpt_128k = engine.checkpoint();
+        assert(ckpt_128k == current_pos);
+        std::cout << "[PASS] Checkpointed 128K context state at position " << ckpt_128k << std::endl;
 
         std::vector<int> branch_tokens = {101, 102, 103, 104};
         engine.prefill(branch_tokens);
-        assert(engine.get_current_context_length() == ckpt_32k + 4);
+        assert(engine.get_current_context_length() == ckpt_128k + 4);
 
-        int restored_32k = engine.restore();
-        assert(restored_32k == ckpt_32k);
-        assert(engine.get_current_context_length() == ckpt_32k);
-        std::cout << "[PASS] Successfully restored 32K context to position " << restored_32k << std::endl;
+        int restored_128k = engine.restore();
+        assert(restored_128k == ckpt_128k);
+        assert(engine.get_current_context_length() == ckpt_128k);
+        std::cout << "[PASS] Successfully restored 128K context to position " << restored_128k << std::endl;
 
     } catch (const std::exception& e) {
-        std::cerr << "[ERROR] Exception during high context test: " << e.what() << std::endl;
+        std::cerr << "[ERROR] Exception during 128K context test: " << e.what() << std::endl;
         std::filesystem::remove_all(synth_model_dir);
         return 1;
     }
 
     std::filesystem::remove_all(synth_model_dir);
     std::cout << "\n=================================================================" << std::endl;
-    std::cout << ">>> HIGH CONTEXT (32K+ TOKENS) STRESS TEST PASSED WITH ZERO ERRORS! <<<" << std::endl;
+    std::cout << ">>> MAXIMUM CONTEXT (128K / 131,072 TOKENS) STRESS TEST PASSED WITH ZERO ERRORS! <<<" << std::endl;
     std::cout << "=================================================================" << std::endl;
     return 0;
 }

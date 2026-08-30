@@ -1,5 +1,5 @@
 /// \file maple_npu.cpp
-/// \brief High-performance optimized maple_npu implementation for Maple-Preview 20B-A1B MoE
+/// \brief High-performance optimized maple_npu implementation with 128K Online Softmax & SWA Ring Buffers
 /// \author FastFlowLM Team
 /// \date 2026-08-29
 /// \version 1.0.0
@@ -58,6 +58,59 @@ inline float dot_product_f32_bf16(const float* a, const bf16* b, size_t n) {
     }
     return sum;
 }
+
+inline float dot_product_f32_f32(const float* a, const float* b, size_t n) {
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    size_t i = 0;
+
+    for (; i + 16 <= n; i += 16) {
+        __m256 a0 = _mm256_loadu_ps(a + i);
+        __m256 b0 = _mm256_loadu_ps(b + i);
+        acc0 = _mm256_fmadd_ps(a0, b0, acc0);
+
+        __m256 a1 = _mm256_loadu_ps(a + i + 8);
+        __m256 b1 = _mm256_loadu_ps(b + i + 8);
+        acc1 = _mm256_fmadd_ps(a1, b1, acc1);
+    }
+
+    __m256 acc = _mm256_add_ps(acc0, acc1);
+    alignas(32) float tmp[8];
+    _mm256_storeu_ps(tmp, acc);
+    float sum = tmp[0] + tmp[1] + tmp[2] + tmp[3] + tmp[4] + tmp[5] + tmp[6] + tmp[7];
+
+    for (; i < n; ++i) {
+        sum += a[i] * b[i];
+    }
+    return sum;
+}
+
+inline void accumulate_scaled_f32(float* out, const float* v, float scale, size_t n) {
+    __m256 s = _mm256_set1_ps(scale);
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        __m256 o = _mm256_loadu_ps(out + i);
+        __m256 val = _mm256_loadu_ps(v + i);
+        o = _mm256_fmadd_ps(s, val, o);
+        _mm256_storeu_ps(out + i, o);
+    }
+    for (; i < n; ++i) {
+        out[i] += scale * v[i];
+    }
+}
+
+inline void scale_vector_f32(float* out, float scale, size_t n) {
+    __m256 s = _mm256_set1_ps(scale);
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        __m256 o = _mm256_loadu_ps(out + i);
+        o = _mm256_mul_ps(o, s);
+        _mm256_storeu_ps(out + i, o);
+    }
+    for (; i < n; ++i) {
+        out[i] *= scale;
+    }
+}
 #else
 inline float dot_product_f32_bf16(const float* a, const bf16* b, size_t n) {
     float sum = 0.0f;
@@ -65,6 +118,26 @@ inline float dot_product_f32_bf16(const float* a, const bf16* b, size_t n) {
         sum += a[i] * static_cast<float>(b[i]);
     }
     return sum;
+}
+
+inline float dot_product_f32_f32(const float* a, const float* b, size_t n) {
+    float sum = 0.0f;
+    for (size_t i = 0; i < n; ++i) {
+        sum += a[i] * b[i];
+    }
+    return sum;
+}
+
+inline void accumulate_scaled_f32(float* out, const float* v, float scale, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        out[i] += scale * v[i];
+    }
+}
+
+inline void scale_vector_f32(float* out, float scale, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        out[i] *= scale;
+    }
 }
 #endif
 
@@ -315,45 +388,62 @@ struct maple_npu::Impl {
 
             std::vector<float> head_out(num_heads * head_dim, 0.0f);
 
+            // FlashAttention-style Online Softmax across context without dynamic heap allocation
 #pragma omp parallel for schedule(static) if(num_heads >= 4)
             for (int64_t head_i = 0; head_i < static_cast<int64_t>(num_heads); ++head_i) {
                 size_t head = static_cast<size_t>(head_i);
                 size_t kv_h = head / gqa_ratio;
                 const float* q_h = &q[head * head_dim];
-
-                std::vector<float> scores(num_ctx);
-                float max_score = -1e30f;
-
-                for (int c_idx = 0; c_idx < num_ctx; ++c_idx) {
-                    int p = start_p + c_idx;
-                    size_t p_slot = is_sliding ? (static_cast<size_t>(p) % sliding_window) : static_cast<size_t>(p);
-                    const float* k_p = &k_caches[l][p_slot * kv_dim + kv_h * head_dim];
-                    
-                    float dot = 0.0f;
-                    for (size_t d = 0; d < head_dim; ++d) {
-                        dot += q_h[d] * k_p[d];
-                    }
-                    float sc = dot * scale;
-                    scores[c_idx] = sc;
-                    if (sc > max_score) max_score = sc;
-                }
-
-                float sum_exp = 0.0f;
-                for (int c_idx = 0; c_idx < num_ctx; ++c_idx) {
-                    scores[c_idx] = std::exp(scores[c_idx] - max_score);
-                    sum_exp += scores[c_idx];
-                }
-                float inv_sum = 1.0f / (sum_exp + 1e-20f);
-
                 float* out_h = &head_out[head * head_dim];
-                for (int c_idx = 0; c_idx < num_ctx; ++c_idx) {
-                    int p = start_p + c_idx;
-                    size_t p_slot = is_sliding ? (static_cast<size_t>(p) % sliding_window) : static_cast<size_t>(p);
-                    float weight = scores[c_idx] * inv_sum;
-                    const float* v_p = &v_caches[l][p_slot * kv_dim + kv_h * head_dim];
-                    for (size_t d = 0; d < head_dim; ++d) {
-                        out_h[d] += weight * v_p[d];
+
+                float m_prev = -1e30f;
+                float l_prev = 0.0f;
+
+                constexpr size_t TILE = 256;
+                float chunk_scores[TILE];
+
+                for (int c_start = 0; c_start < num_ctx; c_start += TILE) {
+                    int c_end = std::min(num_ctx, static_cast<int>(c_start + TILE));
+                    int c_len = c_end - c_start;
+
+                    float chunk_max = -1e30f;
+                    for (int i = 0; i < c_len; ++i) {
+                        int p = start_p + c_start + i;
+                        size_t p_slot = is_sliding ? (static_cast<size_t>(p) % sliding_window) : static_cast<size_t>(p);
+                        const float* k_p = &k_caches[l][p_slot * kv_dim + kv_h * head_dim];
+
+                        float dot = dot_product_f32_f32(q_h, k_p, head_dim);
+                        float sc = dot * scale;
+                        chunk_scores[i] = sc;
+                        if (sc > chunk_max) chunk_max = sc;
                     }
+
+                    float m_new = std::max(m_prev, chunk_max);
+                    float alpha = std::exp(m_prev - m_new);
+
+                    float chunk_exp_sum = 0.0f;
+                    for (int i = 0; i < c_len; ++i) {
+                        chunk_scores[i] = std::exp(chunk_scores[i] - m_new);
+                        chunk_exp_sum += chunk_scores[i];
+                    }
+
+                    float l_new = l_prev * alpha + chunk_exp_sum;
+                    scale_vector_f32(out_h, alpha, head_dim);
+
+                    for (int i = 0; i < c_len; ++i) {
+                        int p = start_p + c_start + i;
+                        size_t p_slot = is_sliding ? (static_cast<size_t>(p) % sliding_window) : static_cast<size_t>(p);
+                        const float* v_p = &v_caches[l][p_slot * kv_dim + kv_h * head_dim];
+                        accumulate_scaled_f32(out_h, v_p, chunk_scores[i], head_dim);
+                    }
+
+                    m_prev = m_new;
+                    l_prev = l_new;
+                }
+
+                if (l_prev > 1e-20f) {
+                    float inv_l = 1.0f / l_prev;
+                    scale_vector_f32(out_h, inv_l, head_dim);
                 }
             }
 
