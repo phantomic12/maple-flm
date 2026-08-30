@@ -896,62 +896,36 @@ struct maple_npu::Impl {
                 }
             }
 
-            // Zero the batch MoE output accumulator
-            std::fill(batch_moe_out.begin(), batch_moe_out.begin() + B * hidden_size, 0.0f);
+            // Parallel Token MoE Execution (Zero Atomic Locks)
+#pragma omp parallel for schedule(dynamic, 1)
+            for (int64_t b = 0; b < static_cast<int64_t>(B); ++b) {
+                const float* norm_h_b = &batch_norm_h[b * hidden_size];
+                float* moe_out_b = &batch_moe_out[b * hidden_size];
+                std::fill(moe_out_b, moe_out_b + hidden_size, 0.0f);
 
-            // 2. Inverted Index: Group tokens by assigned expert
-            uint8_t exp_tok_cnt[256] = {0};
-            uint8_t exp_tok_list[256][64];
-            float exp_tok_weight[256][64];
-
-            for (size_t b = 0; b < B; ++b) {
+                alignas(32) float exp_inter[8][512];
                 for (size_t k_i = 0; k_i < num_experts_per_tok; ++k_i) {
                     size_t e = batch_topk_exp[b][k_i];
-                    uint8_t cnt = exp_tok_cnt[e];
-                    if (cnt < 64) {
-                        exp_tok_list[e][cnt] = static_cast<uint8_t>(b);
-                        exp_tok_weight[e][cnt] = batch_topk_weights[b][k_i];
-                        exp_tok_cnt[e]++;
-                    }
-                }
-            }
-
-            // 3. Parallelized Grouped Expert Execution (Weights stay L1/L2 cache-resident)
-#pragma omp parallel for schedule(dynamic, 2)
-            for (int64_t e_idx = 0; e_idx < static_cast<int64_t>(num_experts); ++e_idx) {
-                size_t e = static_cast<size_t>(e_idx);
-                uint8_t count = exp_tok_cnt[e];
-                if (count == 0) continue;
-
-                const auto& exp = layer.experts[e];
-                alignas(32) float intermediate[64][512];
-
-                // Fused Gate & Up projections across all tokens routed to expert e
-                for (uint8_t idx = 0; idx < count; ++idx) {
-                    size_t b = exp_tok_list[e][idx];
-                    const float* norm_h_b = &batch_norm_h[b * hidden_size];
+                    const auto& exp = layer.experts[e];
                     for (size_t m = 0; m < moe_intermediate_size; ++m) {
                         float gate_act = dot_product_ternary_fast(norm_h_b, exp.gate_proj.begin() + m * hidden_size, hidden_size);
                         float up_act   = dot_product_ternary_fast(norm_h_b, exp.up_proj.begin() + m * hidden_size, hidden_size);
                         float g = std::min(7.0f, gate_act);
                         float u = clamp_val(up_act, -7.0f, 7.0f);
                         float sig = 1.0f / (1.0f + std::exp(-g));
-                        intermediate[idx][m] = (g * sig) * u;
+                        exp_inter[k_i][m] = (g * sig) * u;
                     }
                 }
 
-                // Fused Down projection and accumulation
-                for (uint8_t idx = 0; idx < count; ++idx) {
-                    size_t b = exp_tok_list[e][idx];
-                    float weight = exp_tok_weight[e][idx];
-                    float* moe_out_b = &batch_moe_out[b * hidden_size];
-
-                    for (size_t hid = 0; hid < hidden_size; ++hid) {
-                        const bf16* down_row = exp.down_proj.begin() + hid * moe_intermediate_size;
-                        float val = dot_product_ternary_fast(intermediate[idx], down_row, moe_intermediate_size);
-#pragma omp atomic
-                        moe_out_b[hid] += weight * val;
+                for (size_t hid = 0; hid < hidden_size; ++hid) {
+                    float sum = 0.0f;
+                    for (size_t k_i = 0; k_i < num_experts_per_tok; ++k_i) {
+                        size_t e = batch_topk_exp[b][k_i];
+                        float weight = batch_topk_weights[b][k_i];
+                        const bf16* down_row = layer.experts[e].down_proj.begin() + hid * moe_intermediate_size;
+                        sum += weight * dot_product_ternary_fast(exp_inter[k_i], down_row, moe_intermediate_size);
                     }
+                    moe_out_b[hid] = sum;
                 }
             }
 
