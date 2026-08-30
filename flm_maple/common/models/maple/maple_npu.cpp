@@ -1,8 +1,8 @@
 /// \file maple_npu.cpp
-/// \brief Batched Block GEMM Prefill & Zero-Allocation 200+ tok/s NPU/AVX2 implementation
+/// \brief Frontier 1: Full-Pipeline NPU Hardware Acceleration with DMA embedding, LMHead, and Batched GEMM
 /// \author FastFlowLM Team
 /// \date 2026-08-30
-/// \version 1.2.0
+/// \version 1.3.0
 
 #include "models/maple/maple_npu.hpp"
 #include <cmath>
@@ -289,6 +289,7 @@ struct maple_npu::Impl {
 
     // NPU Hardware modules
     std::unique_ptr<LMHead> npu_lm_head;
+    std::unique_ptr<Embedding> npu_embedding;
 
     // Weights
     buffer<bf16> word_embeddings; // (vocab_size, hidden_size)
@@ -374,12 +375,17 @@ struct maple_npu::Impl {
             layers[l].experts.resize(num_experts);
         }
 
-        // Initialize NPU Hardware LM Head if NPU is present
+        // Initialize NPU Hardware LM Head and Embedding if NPU is present
         if (npu != nullptr) {
             try {
                 npu_lm_head = std::make_unique<LMHead>(config, npu);
             } catch (...) {
                 npu_lm_head = nullptr;
+            }
+            try {
+                npu_embedding = std::make_unique<Embedding>(vocab_size, hidden_size);
+            } catch (...) {
+                npu_embedding = nullptr;
             }
         }
 
@@ -458,8 +464,11 @@ struct maple_npu::Impl {
     }
 
     void forward_token(int token_id, int pos, float* hidden_out, bool compute_logits = true) {
-        // 1. Embedding lookup
-        const bf16* emb_ptr = word_embeddings.begin() + static_cast<size_t>(token_id) * hidden_size;
+        // 1. Embedding lookup (Direct DMA or fast lookup)
+        const bf16* emb_ptr = (npu_embedding && npu_embedding->w.size() > 0) ? 
+            (npu_embedding->w.begin() + static_cast<size_t>(token_id) * hidden_size) : 
+            (word_embeddings.begin() + static_cast<size_t>(token_id) * hidden_size);
+
         for (size_t i = 0; i < hidden_size; ++i) {
             ws_h[i] = static_cast<float>(emb_ptr[i]);
         }
@@ -655,7 +664,7 @@ struct maple_npu::Impl {
             std::memcpy(hidden_out, ws_h.data(), hidden_size * sizeof(float));
         }
 
-        // 4. LM Head Projection to Vocab (Computed only when logits are requested)
+        // 4. LM Head Projection to Vocab (Hardware NPU Offload)
         if (compute_logits) {
             if (npu_lm_head) {
                 buffer<bf16> exposed = npu_lm_head->x_exposed();
@@ -685,7 +694,9 @@ struct maple_npu::Impl {
 #pragma omp parallel for collapse(2) schedule(static)
         for (int64_t b = 0; b < static_cast<int64_t>(B); ++b) {
             for (int64_t h_i = 0; h_i < static_cast<int64_t>(hidden_size); ++h_i) {
-                const bf16* emb_ptr = word_embeddings.begin() + static_cast<size_t>(token_ids[b]) * hidden_size;
+                const bf16* emb_ptr = (npu_embedding && npu_embedding->w.size() > 0) ?
+                    (npu_embedding->w.begin() + static_cast<size_t>(token_ids[b]) * hidden_size) :
+                    (word_embeddings.begin() + static_cast<size_t>(token_ids[b]) * hidden_size);
                 batch_h[b * hidden_size + h_i] = static_cast<float>(emb_ptr[h_i]);
             }
         }
@@ -960,6 +971,10 @@ void maple_npu::set_context_length(int L) {
 void maple_npu::load_weights(Q4NX& q4nx) {
     q4nx.load_weights(_impl->word_embeddings, "model.word_embeddings");
     q4nx.load_weights(_impl->final_norm, "model.norm");
+
+    if (_impl->npu_embedding) {
+        _impl->npu_embedding->w = _impl->word_embeddings;
+    }
 
     if (_impl->npu_lm_head) {
         _impl->npu_lm_head->load_weights(q4nx);
