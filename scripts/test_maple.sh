@@ -15,10 +15,13 @@ fi
 echo "--> 1. Running test_maple_integration unit/integration binary..."
 "${ROOT_DIR}/FastFlowLM/src/build/test_maple_integration"
 
-echo "--> 2. Verifying 'flm list' model discovery..."
+echo "--> 2. Running test_maple_high_context stress test (32K+ context scaling)..."
+"${ROOT_DIR}/FastFlowLM/src/build/test_maple_high_context"
+
+echo "--> 3. Verifying 'flm list' model discovery..."
 FLM_CONFIG_PATH="${ROOT_DIR}/FastFlowLM/src/model_list.json" "${ROOT_DIR}/FastFlowLM/src/build/flm" list || true
 
-echo "--> 3. Testing convert_maple.py on sample config..."
+echo "--> 4. Testing convert_maple.py on sample config..."
 python3 "${ROOT_DIR}/convert_maple.py" --help > /dev/null
 
 echo "=== All verification steps passed! ==="

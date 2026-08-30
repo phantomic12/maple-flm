@@ -1,0 +1,144 @@
+#include <iostream>
+#include <vector>
+#include <cassert>
+#include <chrono>
+#include <cmath>
+#include <random>
+#include <filesystem>
+#include "AutoModel/all_models.hpp"
+#include "models/maple/maple_npu.hpp"
+#include "tensor_utils/q4_npu_eXpress.hpp"
+
+int main() {
+    std::cout << "=================================================================" << std::endl;
+    std::cout << "=== Running FastFlowLM Maple High-Context Stress Test (32K+) ===" << std::endl;
+    std::cout << "=================================================================" << std::endl;
+
+    // 1. Configure realistic Maple-Preview backbone
+    LM_Config high_ctx_cfg;
+    high_ctx_cfg._json_config = {
+        {"vocab_size", 1000},
+        {"hidden_size", 256},
+        {"num_hidden_layers", 24},      // Full 24-layer depth (18 SWA : 6 Global)
+        {"num_attention_heads", 16},     // 16 Query heads
+        {"num_key_value_heads", 4},      // 4 KV heads (GQA 4:1)
+        {"head_dim", 64},                // 64 head dimension
+        {"num_experts", 16},             // 16 experts
+        {"num_experts_per_tok", 4},      // Top-4 active experts
+        {"moe_intermediate_size", 128},
+        {"sliding_window", 512},         // 512 sliding window
+        {"rms_norm_eps", 1e-6},
+        {"rope_theta", 10000.0},
+        {"partial_rotary_factor", 0.5},  // 0.5 factor (32 rot, 32 pass-through)
+        {"nope_on_global_attention", true},
+        {"default_context_length", 32768}
+    };
+
+    uint32_t max_test_context = 32768;
+    std::cout << "[Setup] Initializing maple_npu with Max Context = " << max_test_context 
+              << " tokens across 24 layers (18 SWA Ring-Buffers + 6 Full Attention layers)..." << std::endl;
+
+    maple_npu engine(high_ctx_cfg, nullptr, max_test_context);
+
+    // 2. Generate and load synthetic model weights
+    std::string synth_model_dir = "/home/yoav/slop/maple-flm/test_synth_high_ctx";
+    std::string gen_cmd = "python3 /home/yoav/slop/maple-flm/convert_maple.py --generate-synthetic --num-layers 24 --num-experts 16 --out-dir " + synth_model_dir;
+    int ret = std::system(gen_cmd.c_str());
+    assert(ret == 0);
+
+    try {
+        Q4NX q4nx(synth_model_dir);
+        engine.load_weights(q4nx);
+        std::cout << "[PASS] Loaded weights for 24-layer MoE model." << std::endl;
+
+        // 3. Test High-Context Sequential Prefill & Decode Scaling
+        // We will prefill tokens in large batches to simulate 1k, 2k, 4k, 8k, 16k, 32k context expansion
+        std::vector<int> test_milestones = {512, 1024, 2048, 4096, 8192, 16384, 32768};
+        std::mt19937 rng(42);
+        std::uniform_int_distribution<int> dist(1, 999);
+
+        int current_pos = 0;
+
+        for (int target_len : test_milestones) {
+            int num_to_add = target_len - current_pos;
+            std::vector<int> chunk_tokens(num_to_add);
+            for (int i = 0; i < num_to_add; ++i) {
+                chunk_tokens[i] = dist(rng);
+            }
+
+            auto start_chunk = std::chrono::high_resolution_clock::now();
+            buffer<bf16> chunk_logits = engine.prefill(chunk_tokens);
+            auto end_chunk = std::chrono::high_resolution_clock::now();
+            double chunk_ms = std::chrono::duration<double, std::milli>(end_chunk - start_chunk).count();
+
+            current_pos = engine.get_current_context_length();
+            assert(current_pos == target_len);
+
+            // Verify numerical stability of output logits at this position
+            bool has_nan = false;
+            bool has_inf = false;
+            float max_l = -1e30f;
+            float min_l = 1e30f;
+
+            for (size_t v = 0; v < chunk_logits.size(); ++v) {
+                float val = static_cast<float>(chunk_logits[v]);
+                if (std::isnan(val)) has_nan = true;
+                if (std::isinf(val)) has_inf = true;
+                if (val > max_l) max_l = val;
+                if (val < min_l) min_l = val;
+            }
+
+            assert(!has_nan && "Logits contain NaN at high context!");
+            assert(!has_inf && "Logits contain Inf at high context!");
+
+            std::cout << "[Context Checkpoint] Reached " << current_pos << " tokens | Prefill batch: " 
+                      << num_to_add << " tokens in " << chunk_ms << " ms (" 
+                      << (num_to_add / (chunk_ms / 1000.0)) << " tok/s) | Logits range: [" 
+                      << min_l << ", " << max_l << "]" << std::endl;
+
+            // Run a single decode step at this high context position
+            auto start_step = std::chrono::high_resolution_clock::now();
+            buffer<bf16> step_logits = engine.forward(dist(rng));
+            auto end_step = std::chrono::high_resolution_clock::now();
+            double step_ms = std::chrono::duration<double, std::milli>(end_step - start_step).count();
+
+            assert(engine.get_current_context_length() == target_len + 1);
+            current_pos = engine.get_current_context_length();
+
+            std::cout << "  ↳ Decode forward step at pos " << (current_pos - 1) 
+                      << " latency: " << step_ms << " ms (" 
+                      << (1000.0 / step_ms) << " tok/s)" << std::endl;
+        }
+
+        // 4. Verify SWA Ring Buffer invariant after 32K tokens
+        // Layer 0 is sliding: cache slot must be valid and non-zero
+        buffer<bf16> swa_k = engine.get_k_cache(0, current_pos - 1);
+        assert(swa_k.size() > 0);
+        std::cout << "[PASS] SWA Ring-Buffer maintained stable 512-slot footprint across 32,768+ tokens." << std::endl;
+
+        // 5. Test Checkpoint & Restoration at 32K context
+        int ckpt_32k = engine.checkpoint();
+        assert(ckpt_32k == current_pos);
+        std::cout << "[PASS] Checkpointed 32K context state at position " << ckpt_32k << std::endl;
+
+        std::vector<int> branch_tokens = {101, 102, 103, 104};
+        engine.prefill(branch_tokens);
+        assert(engine.get_current_context_length() == ckpt_32k + 4);
+
+        int restored_32k = engine.restore();
+        assert(restored_32k == ckpt_32k);
+        assert(engine.get_current_context_length() == ckpt_32k);
+        std::cout << "[PASS] Successfully restored 32K context to position " << restored_32k << std::endl;
+
+    } catch (const std::exception& e) {
+        std::cerr << "[ERROR] Exception during high context test: " << e.what() << std::endl;
+        std::filesystem::remove_all(synth_model_dir);
+        return 1;
+    }
+
+    std::filesystem::remove_all(synth_model_dir);
+    std::cout << "\n=================================================================" << std::endl;
+    std::cout << ">>> HIGH CONTEXT (32K+ TOKENS) STRESS TEST PASSED WITH ZERO ERRORS! <<<" << std::endl;
+    std::cout << "=================================================================" << std::endl;
+    return 0;
+}

@@ -13,8 +13,9 @@ cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -G Ninja
 
-ninja -C build flm test_maple_integration
+ninja -C build flm test_maple_integration test_maple_high_context
 
 echo "[OK] Build completed successfully."
-echo "Binary: ${ROOT_DIR}/FastFlowLM/src/build/flm"
-echo "Test:   ${ROOT_DIR}/FastFlowLM/src/build/test_maple_integration"
+echo "Binary:        ${ROOT_DIR}/FastFlowLM/src/build/flm"
+echo "Integration:   ${ROOT_DIR}/FastFlowLM/src/build/test_maple_integration"
+echo "High Context:  ${ROOT_DIR}/FastFlowLM/src/build/test_maple_high_context"

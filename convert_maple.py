@@ -338,12 +338,23 @@ def main():
     parser.add_argument("--out-dir", type=str, required=True, help="Destination directory for FastFlowLM model files")
     parser.add_argument("--generate-synthetic", action="store_true", help="Generate lightweight synthetic model for testing")
     parser.add_argument("--generate-manifests", action="store_true", help="Generate model_list and model_info manifest JSONs")
+    parser.add_argument("--num-layers", type=int, default=2, help="Number of layers for synthetic model")
+    parser.add_argument("--num-experts", type=int, default=8, help="Number of experts for synthetic model")
+    parser.add_argument("--hidden-size", type=int, default=256, help="Hidden size for synthetic model")
+    parser.add_argument("--num-heads", type=int, default=4, help="Number of Q heads for synthetic model")
+    parser.add_argument("--num-kv-heads", type=int, default=2, help="Number of KV heads for synthetic model")
+    parser.add_argument("--head-dim", type=int, default=64, help="Head dimension for synthetic model")
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
 
     if args.generate_synthetic:
-        generate_synthetic_model(out_dir)
+        generate_synthetic_model(
+            out_dir, 
+            num_layers=args.num_layers, 
+            num_experts=args.num_experts, 
+            vocab_size=1000
+        )
         if args.generate_manifests:
             list_entry, info_entries = generate_manifest_entries(out_dir)
             print("\nGenerated Manifest Entry:")
