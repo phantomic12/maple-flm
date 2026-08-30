@@ -1,5 +1,5 @@
 /// \file maple_npu.cpp
-/// \brief High-performance optimized maple_npu implementation with NPU Acceleration, 128K Online Softmax & SWA Ring Buffers
+/// \brief High-performance optimized maple_npu implementation with 128K Fast Prefill, NPU LMHead offloading & SWA Ring Buffers
 /// \author FastFlowLM Team
 /// \date 2026-08-29
 /// \version 1.0.0
@@ -336,7 +336,7 @@ struct maple_npu::Impl {
         }
     }
 
-    void forward_token(int token_id, int pos, float* hidden_out) {
+    void forward_token(int token_id, int pos, float* hidden_out, bool compute_logits = true) {
         // 1. Embedding lookup
         const bf16* emb_ptr = word_embeddings.begin() + static_cast<size_t>(token_id) * hidden_size;
         std::vector<float> h(hidden_size);
@@ -554,20 +554,22 @@ struct maple_npu::Impl {
             std::memcpy(hidden_out, h.data(), hidden_size * sizeof(float));
         }
 
-        // 4. LM Head Projection to Vocab (Hardware NPU Accelerated or Vectorized CPU fallback)
-        if (npu_lm_head) {
-            buffer<bf16> exposed = npu_lm_head->x_exposed();
-            for (size_t i = 0; i < hidden_size && i < exposed.size(); ++i) {
-                exposed[i] = static_cast<bf16>(h[i]);
-            }
-            npu_lm_head->execute();
-            output_logits = npu_lm_head->wait();
-        } else {
-            std::vector<float> logits_f32(vocab_size);
-            matvec_dot_bf16(h.data(), lm_head.begin(), logits_f32.data(), hidden_size, vocab_size);
+        // 4. LM Head Projection to Vocab (Computed only when logits are requested)
+        if (compute_logits) {
+            if (npu_lm_head) {
+                buffer<bf16> exposed = npu_lm_head->x_exposed();
+                for (size_t i = 0; i < hidden_size && i < exposed.size(); ++i) {
+                    exposed[i] = static_cast<bf16>(h[i]);
+                }
+                npu_lm_head->execute();
+                output_logits = npu_lm_head->wait();
+            } else {
+                std::vector<float> logits_f32(vocab_size);
+                matvec_dot_bf16(h.data(), lm_head.begin(), logits_f32.data(), hidden_size, vocab_size);
 
-            for (size_t v_i = 0; v_i < vocab_size; ++v_i) {
-                output_logits[v_i] = static_cast<bf16>(logits_f32[v_i]);
+                for (size_t v_i = 0; v_i < vocab_size; ++v_i) {
+                    output_logits[v_i] = static_cast<bf16>(logits_f32[v_i]);
+                }
             }
         }
     }
@@ -584,7 +586,7 @@ buffer<bf16> maple_npu::forward(int ids) {
     if (_impl->cur_pos >= static_cast<int>(_impl->max_seq_len)) {
         _impl->cur_pos = _impl->max_seq_len - 1;
     }
-    _impl->forward_token(ids, _impl->cur_pos, nullptr);
+    _impl->forward_token(ids, _impl->cur_pos, nullptr, true);
     _impl->cur_pos++;
     return _impl->output_logits;
 }
@@ -594,7 +596,8 @@ buffer<bf16> maple_npu::prefill(std::vector<int>& ids, void* /*payload*/) {
         if (_impl->cur_pos >= static_cast<int>(_impl->max_seq_len)) {
             break;
         }
-        _impl->forward_token(ids[i], _impl->cur_pos, nullptr);
+        bool is_last = (i == ids.size() - 1);
+        _impl->forward_token(ids[i], _impl->cur_pos, nullptr, is_last);
         _impl->cur_pos++;
     }
     return _impl->output_logits;
