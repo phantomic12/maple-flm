@@ -1,0 +1,52 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) readonly buffer InputA {
+    float A[];
+};
+
+layout(std430, binding = 1) readonly buffer InputB {
+    uint B_packed[]; // 2 bf16 values per uint32
+};
+
+layout(std430, binding = 2) writeonly buffer OutputC {
+    float C[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint M;
+    uint K;
+    uint N;
+} pc;
+
+float unpack_bf16(uint raw16) {
+    uint f32_bits = (raw16 & 0xFFFFu) << 16u;
+    return uintBitsToFloat(f32_bits);
+}
+
+void main() {
+    uint row = gl_GlobalInvocationID.y;
+    uint col = gl_GlobalInvocationID.x;
+
+    if (row >= pc.M || col >= pc.N) {
+        return;
+    }
+
+    float sum = 0.0;
+    uint k_words = pc.K / 2u;
+    uint b_row_start = col * k_words;
+
+    for (uint kw = 0; kw < k_words; ++kw) {
+        uint k = kw * 2u;
+        float a0 = A[row * pc.K + k];
+        float a1 = A[row * pc.K + k + 1u];
+
+        uint b_word = B_packed[b_row_start + kw];
+        float b0 = unpack_bf16(b_word & 0xFFFFu);
+        float b1 = unpack_bf16((b_word >> 16u) & 0xFFFFu);
+
+        sum += a0 * b0 + a1 * b1;
+    }
+
+    C[row * pc.N + col] = sum;
+}

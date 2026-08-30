@@ -119,10 +119,10 @@ int main() {
         int tokens_to_push = target_len - current_pos;
         std::vector<int> chunk(tokens_to_push);
         for (int i = 0; i < tokens_to_push; ++i) {
-            // Fill with deterministic benchmark tokens with needle markers
             chunk[i] = ((current_pos + i) * 37 + 101) % 151936;
         }
 
+        std::cout << "  --> Ingesting batch of " << tokens_to_push << " tokens towards " << target_len << " context..." << std::flush;
         auto start = std::chrono::high_resolution_clock::now();
         buffer<bf16> logits = engine.prefill(chunk);
         auto end = std::chrono::high_resolution_clock::now();
@@ -147,9 +147,7 @@ int main() {
         double d_tok_s = 1000.0 / d_ms;
         current_pos++;
 
-        std::cout << "  [Checkpoint] Context: " << target_len 
-                  << " tokens | Ingest: " << tokens_to_push << " toks in " << elapsed_ms << " ms (" << tok_s << " tok/s)"
-                  << " | Decode Latency: " << d_ms << " ms (" << d_tok_s << " tok/s)" << std::endl;
+        std::cout << " [DONE]\n      Ingest Latency: " << elapsed_ms << " ms (" << tok_s << " tok/s) | Decode Latency: " << d_ms << " ms (" << d_tok_s << " tok/s)" << std::endl;
     }
 
     // -------------------------------------------------------------
