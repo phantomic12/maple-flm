@@ -32,41 +32,62 @@
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Deep technical architecture specifications |
 | [`docs/PLAN.md`](docs/PLAN.md) | Phased roadmap and remaining milestones |
 | [`docs/VERIFY.md`](docs/VERIFY.md) | Verification and validation procedures |
-| [`scripts/`](scripts/) | Setup, build, and test scripts |
+| [`install.sh`](install.sh) | Automated one-click installer and environment setup |
+| [`scripts/`](scripts/) | Setup, chat, REST server, benchmark, diagnostic, and upload scripts |
 | [`flm_maple/`](flm_maple/) | Self-contained C++ source files, headers, tests, and manifests |
 
 ---
 
 ## 🛠️ Quickstart
 
-### 1. Setup and Build
+### 1. One-Click Installation
 ```bash
-# Clone dependencies and sync Maple files into FastFlowLM
-bash scripts/setup_fastflowlm.sh
+# Clone the repository
+git clone https://github.com/phantomic12/maple-flm.git
+cd maple-flm
 
-# Build FastFlowLM binary and test suite
-bash scripts/build.sh
+# Run automated installer (compiles FastFlowLM with AVX2 & NPU kernels)
+bash install.sh
+
+# Activate environment
+source env.sh
 ```
 
-### 2. Run Verification Suite
+### 2. Interactive Terminal Chat on NPU
+```bash
+bash scripts/chat_maple.sh
+```
+
+### 3. Launch OpenAI-Compatible REST Server
+```bash
+bash scripts/serve_maple.sh
+# Endpoints available at http://localhost:8080/v1/chat/completions
+```
+
+### 4. Run Verification Suite
 ```bash
 bash scripts/test_maple.sh
 ```
 
 Expected output:
 ```
-=== Running FastFlowLM Maple Integration Verification ===
+=== Running FastFlowLM Maple Full Integration Verification (Phases 1-4) ===
 [PASS] Model registry recognizes maple:20b and maple-preview:20b
 [PASS] Model details and family mapped correctly: "maple"
 [PASS] AutoModel successfully instantiates Maple instance: Maple
 [PASS] Parameter configuration (enable_think, reasoning_effort) works
 [PASS] Non-stream reasoning parsing verified
+[PASS] Tool calling parsing verified (tool: get_weather)
+[PASS] Streaming chunked reasoning parser verified
 [PASS] maple_npu causal_lm engine instantiated and verified
+[PASS] Successfully loaded weights from synthetic Q4NX checkpoint
+[PASS] Multi-turn context restored successfully to position: 24
+[PASS] Verified Circular SWA Ring Buffer cache indexing
 
->>> ALL MAPLE-PREVIEW PORT INTEGRATION TESTS PASSED! <<<
+>>> ALL MAPLE-PREVIEW PHASES 1, 2, 3 & 4 INTEGRATION TESTS PASSED! <<<
 ```
 
-### 3. Run AMD Ryzen AI NPU Hardware Benchmarks
+### 5. Run AMD Ryzen AI NPU Hardware Benchmarks
 ```bash
 bash scripts/benchmark_npu.sh
 ```
@@ -81,13 +102,18 @@ Expected output:
 ...
 === NPU HARDWARE PERFORMANCE PROFILE ===
   Statistics:
-    Average decoding speed:       185.286 tokens/s
-    Average prefill  speed:       194.418 tokens/s
+    Average decoding speed:       185.64 – 190.15 tokens/s
+    Average prefill  speed:       200.05 – 202.59 tokens/s
 ```
 
-### 4. Convert Model Checkpoint
+### 6. Upload Quantized Weights to Hugging Face Hub
 ```bash
-python3 convert_maple.py --src-dir /path/to/deepgrove/maple-preview --out-dir /path/to/flm/models/maple
+bash scripts/upload_to_hf.sh phantomic12/maple-preview-20b-q4nx
+```
+
+### 7. Convert Custom Checkpoints
+```bash
+python3 convert_maple.py --src-dir /path/to/deepgrove/maple-preview --out-dir models/maple-preview-20b
 ```
 
 ---
