@@ -1,14 +1,16 @@
 #include <iostream>
 #include <cassert>
+#include <filesystem>
 #include "AutoModel/all_models.hpp"
 #include "models/maple/maple_npu.hpp"
+#include "tensor_utils/q4_npu_eXpress.hpp"
 
 int main() {
-    std::cout << "=== Running FastFlowLM Maple Integration Verification ===" << std::endl;
+    std::cout << "=== Running FastFlowLM Maple Integration Verification (Phases 1 & 2) ===" << std::endl;
 
     // 1. Verify Model List & Family resolution
     std::string model_dir = utils::get_models_directory();
-    std::string model_list_path = "FastFlowLM/src/model_list.json";
+    std::string model_list_path = "/home/yoav/slop/maple-flm/FastFlowLM/src/model_list.json";
 
     model_list m_list(model_list_path, model_dir);
     assert(m_list.is_model_supported("maple:20b"));
@@ -47,27 +49,57 @@ int main() {
     // 5. Verify Causal LM Engine (maple_npu) dimensions and state
     LM_Config mock_cfg;
     mock_cfg._json_config = {
-        {"vocab_size", 151936},
-        {"hidden_size", 2048},
-        {"num_hidden_layers", 24},
-        {"num_attention_heads", 16},
-        {"num_key_value_heads", 4},
-        {"head_dim", 128},
-        {"num_experts", 256},
-        {"num_experts_per_tok", 8},
-        {"moe_intermediate_size", 512},
-        {"sliding_window", 512},
+        {"vocab_size", 1000},
+        {"hidden_size", 256},
+        {"num_hidden_layers", 2},
+        {"num_attention_heads", 4},
+        {"num_key_value_heads", 2},
+        {"head_dim", 64},
+        {"num_experts", 8},
+        {"num_experts_per_tok", 2},
+        {"moe_intermediate_size", 128},
+        {"sliding_window", 32},
         {"rms_norm_eps", 1e-6},
         {"rope_theta", 10000.0},
         {"partial_rotary_factor", 0.5},
         {"nope_on_global_attention", true}
     };
 
-    maple_npu engine(mock_cfg, nullptr, 2048);
+    maple_npu engine(mock_cfg, nullptr, 512);
     assert(engine.get_current_context_length() == 0);
     engine.clear_context();
     std::cout << "[PASS] maple_npu causal_lm engine instantiated and verified" << std::endl;
 
-    std::cout << "\n>>> ALL MAPLE-PREVIEW PORT INTEGRATION TESTS PASSED! <<<" << std::endl;
+    // 6. Test weight loading and forward pass with synthetic Q4NX checkpoint
+    std::string synth_model_dir = "/home/yoav/slop/maple-flm/test_synth_ci";
+    std::string gen_cmd = "python3 /home/yoav/slop/maple-flm/convert_maple.py --generate-synthetic --out-dir " + synth_model_dir;
+    int ret = std::system(gen_cmd.c_str());
+    assert(ret == 0);
+
+    try {
+        Q4NX q4nx(synth_model_dir);
+        engine.load_weights(q4nx);
+        std::cout << "[PASS] Successfully loaded weights from synthetic Q4NX checkpoint" << std::endl;
+
+        // Perform prefill
+        std::vector<int> prompt_tokens = {1, 10, 25, 42};
+        buffer<bf16> logits = engine.prefill(prompt_tokens);
+        assert(logits.size() == 1000);
+        assert(engine.get_current_context_length() == 4);
+        std::cout << "[PASS] Executed prefill pass across 4 prompt tokens (logits size: " << logits.size() << ")" << std::endl;
+
+        // Perform decode forward
+        buffer<bf16> next_logits = engine.forward(100);
+        assert(next_logits.size() == 1000);
+        assert(engine.get_current_context_length() == 5);
+        std::cout << "[PASS] Executed forward decode token pass (logits size: " << next_logits.size() << ")" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "[ERROR] Exception during synthetic weight test: " << e.what() << std::endl;
+        std::filesystem::remove_all(synth_model_dir);
+        return 1;
+    }
+
+    std::filesystem::remove_all(synth_model_dir);
+    std::cout << "\n>>> ALL MAPLE-PREVIEW PHASES 1 & 2 INTEGRATION TESTS PASSED! <<<" << std::endl;
     return 0;
 }
