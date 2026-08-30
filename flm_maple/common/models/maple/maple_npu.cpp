@@ -320,8 +320,8 @@ struct maple_npu::Impl {
     std::vector<size_t> ws_expert_indices;
     std::vector<std::vector<float>> ws_expert_intermediates;
 
-    // Batch GEMM Prefill Workspace (B = 32)
-    static constexpr size_t BATCH_SIZE = 32;
+    // Batch GEMM Prefill Workspace (B = 64)
+    static constexpr size_t BATCH_SIZE = 64;
     std::vector<float> batch_h;
     std::vector<float> batch_norm_h;
     std::vector<float> batch_q;
