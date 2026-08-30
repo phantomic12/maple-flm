@@ -867,7 +867,7 @@ struct maple_npu::Impl {
                 for (size_t e = 0; e < num_experts; ++e) {
                     if (r_logits[e] > max_logit) max_logit = r_logits[e];
                 }
-                std::vector<float> r_probs(num_experts);
+                alignas(32) float r_probs[256];
                 float sum_router = 0.0f;
                 for (size_t e = 0; e < num_experts; ++e) {
                     r_probs[e] = std::exp(r_logits[e] - max_logit);
@@ -878,9 +878,9 @@ struct maple_npu::Impl {
                     r_probs[e] *= inv_router_sum;
                 }
 
-                std::vector<size_t> exp_idx(num_experts);
-                std::iota(exp_idx.begin(), exp_idx.end(), 0);
-                std::partial_sort(exp_idx.begin(), exp_idx.begin() + num_experts_per_tok, exp_idx.end(),
+                alignas(32) size_t exp_idx[256];
+                std::iota(exp_idx, exp_idx + num_experts, 0);
+                std::partial_sort(exp_idx, exp_idx + num_experts_per_tok, exp_idx + num_experts,
                     [&](size_t a, size_t b) { return r_probs[a] > r_probs[b]; });
 
                 float topk_sum = 0.0f;
@@ -889,7 +889,7 @@ struct maple_npu::Impl {
                 }
                 float inv_topk_sum = 1.0f / (topk_sum + 1e-20f);
 
-                std::vector<std::vector<float>> exp_inter(num_experts_per_tok, std::vector<float>(moe_intermediate_size));
+                alignas(32) float exp_inter[8][512];
                 for (size_t k_i = 0; k_i < num_experts_per_tok; ++k_i) {
                     size_t e = exp_idx[k_i];
                     const auto& exp = layer.experts[e];
@@ -909,7 +909,7 @@ struct maple_npu::Impl {
                         size_t e = exp_idx[k_i];
                         float weight = r_probs[e] * inv_topk_sum;
                         const bf16* down_row = layer.experts[e].down_proj.begin() + hid * moe_intermediate_size;
-                        sum += weight * dot_product_ternary_fast(exp_inter[k_i].data(), down_row, moe_intermediate_size);
+                        sum += weight * dot_product_ternary_fast(exp_inter[k_i], down_row, moe_intermediate_size);
                     }
                     moe_out_b[hid] = sum;
                 }
