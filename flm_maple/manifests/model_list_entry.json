@@ -1,0 +1,66 @@
+{
+    "maple": {
+        "20b": {
+            "name": "Maple-Preview-20B-NPU2",
+            "url": "https://huggingface.co/deepgrove/maple-preview",
+            "file_url": "https://huggingface.co/api/models/deepgrove/maple-preview/tree/main",
+            "ms_url": "https://modelscope.cn/models/deepgrove/maple-preview",
+            "size": 5310000000,
+            "flm_min_version": "1.0.0",
+            "default_context_length": 32768,
+            "max_prefill_len": 4096,
+            "files": [
+                "config.json",
+                "model.q4nx",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "chat_template.jinja"
+            ],
+            "details": {
+                "format": "NPU2",
+                "family": "maple",
+                "think": true,
+                "parameter_size": "20B-A1B",
+                "quantization_level": "ternary"
+            },
+            "label": [
+                "reasoning",
+                "moe",
+                "ternary"
+            ],
+            "footprint": 5.31
+        }
+    },
+    "maple-preview": {
+        "20b": {
+            "name": "Maple-Preview-20B-NPU2",
+            "url": "https://huggingface.co/deepgrove/maple-preview",
+            "file_url": "https://huggingface.co/api/models/deepgrove/maple-preview/tree/main",
+            "ms_url": "https://modelscope.cn/models/deepgrove/maple-preview",
+            "size": 5310000000,
+            "flm_min_version": "1.0.0",
+            "default_context_length": 32768,
+            "max_prefill_len": 4096,
+            "files": [
+                "config.json",
+                "model.q4nx",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "chat_template.jinja"
+            ],
+            "details": {
+                "format": "NPU2",
+                "family": "maple",
+                "think": true,
+                "parameter_size": "20B-A1B",
+                "quantization_level": "ternary"
+            },
+            "label": [
+                "reasoning",
+                "moe",
+                "ternary"
+            ],
+            "footprint": 5.31
+        }
+    }
+}

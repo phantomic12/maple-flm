@@ -1,0 +1,18 @@
+# FastFlowLM upstream clone and local build artifacts
+/FastFlowLM/
+/fastflowlm/
+/build/
+build/
+*.o
+*.so
+*.a
+__pycache__/
+*.pyc
+.cache/
+/models/
+*.safetensors
+*.bin
+*.q4nx
+test_maple_src/
+test_maple_out/
+.DS_Store

@@ -1,0 +1,66 @@
+{
+    "maple:20b": [
+        {
+            "type": "file",
+            "oid": "maple_config_oid",
+            "size": 2025,
+            "path": "config.json"
+        },
+        {
+            "type": "file",
+            "oid": "maple_weight_oid",
+            "size": 5310000000,
+            "path": "model.q4nx"
+        },
+        {
+            "type": "file",
+            "oid": "maple_tok_oid",
+            "size": 18451122,
+            "path": "tokenizer.json"
+        },
+        {
+            "type": "file",
+            "oid": "maple_tok_cfg_oid",
+            "size": 8100,
+            "path": "tokenizer_config.json"
+        },
+        {
+            "type": "file",
+            "oid": "maple_chat_tmpl_oid",
+            "size": 2500,
+            "path": "chat_template.jinja"
+        }
+    ],
+    "maple-preview:20b": [
+        {
+            "type": "file",
+            "oid": "maple_config_oid",
+            "size": 2025,
+            "path": "config.json"
+        },
+        {
+            "type": "file",
+            "oid": "maple_weight_oid",
+            "size": 5310000000,
+            "path": "model.q4nx"
+        },
+        {
+            "type": "file",
+            "oid": "maple_tok_oid",
+            "size": 18451122,
+            "path": "tokenizer.json"
+        },
+        {
+            "type": "file",
+            "oid": "maple_tok_cfg_oid",
+            "size": 8100,
+            "path": "tokenizer_config.json"
+        },
+        {
+            "type": "file",
+            "oid": "maple_chat_tmpl_oid",
+            "size": 2500,
+            "path": "chat_template.jinja"
+        }
+    ]
+}
