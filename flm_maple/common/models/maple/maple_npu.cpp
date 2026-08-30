@@ -1,5 +1,5 @@
 /// \file maple_npu.cpp
-/// \brief High-performance optimized maple_npu implementation with 128K Online Softmax & SWA Ring Buffers
+/// \brief High-performance optimized maple_npu implementation with NPU Acceleration, 128K Online Softmax & SWA Ring Buffers
 /// \author FastFlowLM Team
 /// \date 2026-08-29
 /// \version 1.0.0
@@ -217,6 +217,9 @@ struct maple_npu::Impl {
     std::vector<std::string> layer_types;
     std::vector<bool> is_sliding_layer;
 
+    // NPU Hardware modules
+    std::unique_ptr<LMHead> npu_lm_head;
+
     // Weights
     buffer<bf16> word_embeddings; // (vocab_size, hidden_size)
     buffer<bf16> final_norm;      // (hidden_size)
@@ -273,6 +276,15 @@ struct maple_npu::Impl {
         layers.resize(num_layers);
         for (size_t l = 0; l < num_layers; ++l) {
             layers[l].experts.resize(num_experts);
+        }
+
+        // Initialize NPU Hardware LM Head if NPU is present
+        if (npu != nullptr) {
+            try {
+                npu_lm_head = std::make_unique<LMHead>(config, npu);
+            } catch (...) {
+                npu_lm_head = nullptr;
+            }
         }
 
         // Allocate optimized KV caches
@@ -542,12 +554,21 @@ struct maple_npu::Impl {
             std::memcpy(hidden_out, h.data(), hidden_size * sizeof(float));
         }
 
-        // 4. LM Head Projection to Vocab
-        std::vector<float> logits_f32(vocab_size);
-        matvec_dot_bf16(h.data(), lm_head.begin(), logits_f32.data(), hidden_size, vocab_size);
+        // 4. LM Head Projection to Vocab (Hardware NPU Accelerated or Vectorized CPU fallback)
+        if (npu_lm_head) {
+            buffer<bf16> exposed = npu_lm_head->x_exposed();
+            for (size_t i = 0; i < hidden_size && i < exposed.size(); ++i) {
+                exposed[i] = static_cast<bf16>(h[i]);
+            }
+            npu_lm_head->execute();
+            output_logits = npu_lm_head->wait();
+        } else {
+            std::vector<float> logits_f32(vocab_size);
+            matvec_dot_bf16(h.data(), lm_head.begin(), logits_f32.data(), hidden_size, vocab_size);
 
-        for (size_t v_i = 0; v_i < vocab_size; ++v_i) {
-            output_logits[v_i] = static_cast<bf16>(logits_f32[v_i]);
+            for (size_t v_i = 0; v_i < vocab_size; ++v_i) {
+                output_logits[v_i] = static_cast<bf16>(logits_f32[v_i]);
+            }
         }
     }
 };
@@ -586,7 +607,12 @@ void maple_npu::set_context_length(int L) {
 void maple_npu::load_weights(Q4NX& q4nx) {
     q4nx.load_weights(_impl->word_embeddings, "model.word_embeddings");
     q4nx.load_weights(_impl->final_norm, "model.norm");
-    q4nx.load_weights(_impl->lm_head, "lm_head");
+
+    if (_impl->npu_lm_head) {
+        _impl->npu_lm_head->load_weights(q4nx);
+    } else {
+        q4nx.load_weights(_impl->lm_head, "lm_head");
+    }
 
     for (size_t l = 0; l < _impl->num_layers; ++l) {
         std::string layer_prefix = "model.layers." + std::to_string(l);
