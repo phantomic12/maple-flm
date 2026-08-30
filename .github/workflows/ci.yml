@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            libboost-program-options-dev \
+            libcurl4-openssl-dev \
+            libfftw3-dev \
+            libreadline-dev \
+            libncurses-dev \
+            libavformat-dev \
+            libavcodec-dev \
+            libavutil-dev \
+            libswscale-dev \
+            libswresample-dev \
+            libomp-dev \
+            python3
+
+      - name: Setup FastFlowLM
+        run: |
+          bash scripts/setup_fastflowlm.sh
+
+      - name: Build FastFlowLM and Maple Suite
+        run: |
+          bash scripts/build.sh
+
+      - name: Run Integration & Performance Tests
+        run: |
+          bash scripts/test_maple.sh

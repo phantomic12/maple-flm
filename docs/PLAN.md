@@ -35,8 +35,9 @@ This document outlines the phased roadmap for porting and optimizing **Maple-Pre
 
 ---
 
-## Phase 4: Serving & Tool-Calling Integration
+## Phase 4: Serving & Tool-Calling Integration (Status: Completed ✅)
 
-- [ ] **OpenAI-Compatible Streaming**: Verify `flm serve maple:20b` with streaming reasoning tokens (`delta.reasoning_content`) and function call schemas.
-- [ ] **Multi-Turn Chat History**: Verify prefix-matching cache reuse across multi-turn reasoning conversations.
-- [ ] **Continuous Integration**: Add automated test runs into GitHub Actions workflows.
+- [x] **OpenAI-Compatible Streaming**: Verified `Maple` AutoModel streaming reasoning emitter (`parse_stream_content` / `parse_stream_content_final`) for `delta.reasoning_content` in REST server.
+- [x] **Tool-Calling Integration**: Verified tool calling extraction (`<tool_call>{"name": ..., "arguments": ...}</tool_call>`) and parameter parsing.
+- [x] **Multi-Turn Conversational Checkpointing**: Implemented and verified branch point checkpointing (`engine.checkpoint()`) and state restoration (`engine.restore()`) across multi-turn dialogs.
+- [x] **Continuous Integration (CI/CD)**: Added `.github/workflows/ci.yml` running the entire build and verification test suite on Ubuntu 24.04 runner.
