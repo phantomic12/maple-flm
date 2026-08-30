@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
 Maple-Preview to FastFlowLM Converter
-Converts deepgrove/maple-preview Hugging Face checkpoint to FastFlowLM format.
+Converts deepgrove/maple-preview Hugging Face checkpoint to FastFlowLM format,
+and provides synthetic model generation for offline testing.
 """
 
 import os
 import sys
 import json
+import struct
 import shutil
 import argparse
 from pathlib import Path
@@ -55,6 +57,101 @@ def convert_tokenizer_config(hf_tok_cfg: dict) -> dict:
         
     return flm_tok_cfg
 
+def write_safetensors(filepath: Path, tensor_dict: dict):
+    """
+    Writes a dictionary of tensors to a SafeTensors binary file without external dependencies.
+    tensor_dict format: {name: {"dtype": "BF16", "shape": list[int], "data": bytes}}
+    """
+    header = {}
+    current_offset = 0
+    
+    for name, info in tensor_dict.items():
+        data_len = len(info["data"])
+        header[name] = {
+            "dtype": info["dtype"],
+            "shape": info["shape"],
+            "data_offsets": [current_offset, current_offset + data_len]
+        }
+        current_offset += data_len
+        
+    header_json = json.dumps(header, separators=(',', ':')).encode('utf-8')
+    # 8-byte little-endian header length
+    header_len = struct.pack('<Q', len(header_json))
+    
+    with open(filepath, 'wb') as f:
+        f.write(header_len)
+        f.write(header_json)
+        for name, info in tensor_dict.items():
+            f.write(info["data"])
+
+def generate_synthetic_model(out_dir: Path, num_layers: int = 2, num_experts: int = 8, vocab_size: int = 1000):
+    """
+    Generates a miniature synthetic Maple model for testing and offline validation.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    hidden_size = 256
+    num_heads = 4
+    num_kv_heads = 2
+    head_dim = 64
+    moe_inter = 128
+    
+    config = {
+        "architectures": ["MapleForCausalLM"],
+        "vocab_size": vocab_size,
+        "hidden_size": hidden_size,
+        "num_hidden_layers": num_layers,
+        "num_attention_heads": num_heads,
+        "num_key_value_heads": num_kv_heads,
+        "head_dim": head_dim,
+        "num_experts": num_experts,
+        "num_experts_per_tok": 2,
+        "moe_intermediate_size": moe_inter,
+        "sliding_window": 32,
+        "rms_norm_eps": 1e-6,
+        "rope_theta": 10000.0,
+        "partial_rotary_factor": 0.5,
+        "nope_on_global_attention": True,
+        "model_type": "maple",
+        "family": "maple",
+        "flm_version": "1.0.0",
+        "default_context_length": 512
+    }
+    
+    with open(out_dir / "config.json", "w") as f:
+        json.dump(config, f, indent=2)
+        
+    # Helper to generate dummy BF16 bytes
+    def make_bf16(num_elements: int, fill_val: int = 0x3F80) -> bytes: # 0x3F80 is ~1.0 in BF16
+        return struct.pack(f'<{num_elements}H', *([fill_val] * num_elements))
+
+    tensors = {}
+    # Embeddings & LM Head
+    tensors["model.word_embeddings"] = {"dtype": "BF16", "shape": [vocab_size, hidden_size], "data": make_bf16(vocab_size * hidden_size)}
+    tensors["model.norm"] = {"dtype": "BF16", "shape": [hidden_size], "data": make_bf16(hidden_size)}
+    tensors["lm_head"] = {"dtype": "BF16", "shape": [vocab_size, hidden_size], "data": make_bf16(vocab_size * hidden_size)}
+
+    # Layers
+    for l in range(num_layers):
+        lp = f"model.layers.{l}"
+        tensors[f"{lp}.input_layernorm"] = {"dtype": "BF16", "shape": [hidden_size], "data": make_bf16(hidden_size)}
+        tensors[f"{lp}.post_attention_layernorm"] = {"dtype": "BF16", "shape": [hidden_size], "data": make_bf16(hidden_size)}
+        tensors[f"{lp}.self_attn.q_proj"] = {"dtype": "BF16", "shape": [num_heads * head_dim, hidden_size], "data": make_bf16(num_heads * head_dim * hidden_size)}
+        tensors[f"{lp}.self_attn.k_proj"] = {"dtype": "BF16", "shape": [num_kv_heads * head_dim, hidden_size], "data": make_bf16(num_kv_heads * head_dim * hidden_size)}
+        tensors[f"{lp}.self_attn.v_proj"] = {"dtype": "BF16", "shape": [num_kv_heads * head_dim, hidden_size], "data": make_bf16(num_kv_heads * head_dim * hidden_size)}
+        tensors[f"{lp}.self_attn.o_proj"] = {"dtype": "BF16", "shape": [hidden_size, num_heads * head_dim], "data": make_bf16(hidden_size * num_heads * head_dim)}
+        tensors[f"{lp}.self_attn.q_norm"] = {"dtype": "BF16", "shape": [head_dim], "data": make_bf16(head_dim)}
+        tensors[f"{lp}.self_attn.k_norm"] = {"dtype": "BF16", "shape": [head_dim], "data": make_bf16(head_dim)}
+        tensors[f"{lp}.mlp.gate"] = {"dtype": "BF16", "shape": [num_experts, hidden_size], "data": make_bf16(num_experts * hidden_size)}
+
+        for e in range(num_experts):
+            ep = f"{lp}.mlp.experts.{e}"
+            tensors[f"{ep}.gate_proj"] = {"dtype": "BF16", "shape": [moe_inter, hidden_size], "data": make_bf16(moe_inter * hidden_size)}
+            tensors[f"{ep}.up_proj"] = {"dtype": "BF16", "shape": [moe_inter, hidden_size], "data": make_bf16(moe_inter * hidden_size)}
+            tensors[f"{ep}.down_proj"] = {"dtype": "BF16", "shape": [hidden_size, moe_inter], "data": make_bf16(hidden_size * moe_inter)}
+
+    write_safetensors(out_dir / "model.q4nx", tensors)
+    print(f"[OK] Generated synthetic model with {len(tensors)} tensors -> {out_dir / 'model.q4nx'}")
+
 def convert_model_directory(src_dir: Path, out_dir: Path):
     """Converts a local directory of deepgrove/maple-preview files to FastFlowLM format."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -92,14 +189,22 @@ def convert_model_directory(src_dir: Path, out_dir: Path):
     print(f"Target directory: {out_dir}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert deepgrove/maple-preview to FastFlowLM format.")
-    parser.add_argument("--src-dir", type=str, required=True, help="Source directory of deepgrove/maple-preview checkpoint")
+    parser = argparse.ArgumentParser(description="Convert deepgrove/maple-preview to FastFlowLM format or generate synthetic models.")
+    parser.add_argument("--src-dir", type=str, default=None, help="Source directory of deepgrove/maple-preview checkpoint")
     parser.add_argument("--out-dir", type=str, required=True, help="Destination directory for FastFlowLM model files")
+    parser.add_argument("--generate-synthetic", action="store_true", help="Generate a lightweight synthetic Maple model for testing")
     args = parser.parse_args()
 
-    src_dir = Path(args.src_dir)
     out_dir = Path(args.out_dir)
 
+    if args.generate_synthetic:
+        generate_synthetic_model(out_dir)
+        return
+
+    if not args.src_dir:
+        parser.error("--src-dir is required unless --generate-synthetic is specified.")
+
+    src_dir = Path(args.src_dir)
     if not src_dir.exists():
         print(f"Error: source directory {src_dir} does not exist", file=sys.stderr)
         sys.exit(1)
