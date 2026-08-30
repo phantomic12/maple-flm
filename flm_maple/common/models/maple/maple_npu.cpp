@@ -55,6 +55,10 @@ inline float dot_product_f32_bf16(const float* a, const bf16* b, size_t n) {
     return sum;
 }
 
+inline float dot_product_ternary_fast(const float* a, const bf16* b, size_t n) {
+    return dot_product_f32_bf16(a, b, n);
+}
+
 inline float dot_product_f32_f32(const float* a, const float* b, size_t n) {
     __m256 acc0 = _mm256_setzero_ps();
     __m256 acc1 = _mm256_setzero_ps();
@@ -164,6 +168,16 @@ inline void rms_norm_out(const float* x, float* out, const bf16* weight, size_t 
     }
 }
 #else
+inline float dot_product_ternary_fast(const float* a, const bf16* b, size_t n) {
+    float sum = 0.0f;
+    for (size_t i = 0; i < n; ++i) {
+        float bv = static_cast<float>(b[i]);
+        if (bv > 0.5f) sum += a[i];
+        else if (bv < -0.5f) sum -= a[i];
+    }
+    return sum;
+}
+
 inline float dot_product_f32_bf16(const float* a, const bf16* b, size_t n) {
     float sum = 0.0f;
     for (size_t i = 0; i < n; ++i) {
@@ -629,8 +643,8 @@ struct maple_npu::Impl {
                 size_t e   = ws_expert_indices[k_i];
                 const auto& exp = layer.experts[e];
 
-                float gate_act = dot_product_f32_bf16(ws_norm_h.data(), exp.gate_proj.begin() + m * hidden_size, hidden_size);
-                float up_act   = dot_product_f32_bf16(ws_norm_h.data(), exp.up_proj.begin() + m * hidden_size, hidden_size);
+                float gate_act = dot_product_ternary_fast(ws_norm_h.data(), exp.gate_proj.begin() + m * hidden_size, hidden_size);
+                float up_act   = dot_product_ternary_fast(ws_norm_h.data(), exp.up_proj.begin() + m * hidden_size, hidden_size);
 
                 float g = std::min(7.0f, gate_act);
                 float u = clamp_val(up_act, -7.0f, 7.0f);
@@ -646,7 +660,7 @@ struct maple_npu::Impl {
                     size_t e = ws_expert_indices[k_i];
                     float weight = ws_router_probs[e] * inv_topk_sum;
                     const bf16* down_row = layer.experts[e].down_proj.begin() + hid * moe_intermediate_size;
-                    sum += weight * dot_product_f32_bf16(ws_expert_intermediates[k_i].data(), down_row, moe_intermediate_size);
+                    sum += weight * dot_product_ternary_fast(ws_expert_intermediates[k_i].data(), down_row, moe_intermediate_size);
                 }
                 ws_moe_out[hid] = sum;
             }
@@ -870,8 +884,8 @@ struct maple_npu::Impl {
                     size_t e = exp_idx[k_i];
                     const auto& exp = layer.experts[e];
                     for (size_t m = 0; m < moe_intermediate_size; ++m) {
-                        float gate_act = dot_product_f32_bf16(norm_h_b, exp.gate_proj.begin() + m * hidden_size, hidden_size);
-                        float up_act   = dot_product_f32_bf16(norm_h_b, exp.up_proj.begin() + m * hidden_size, hidden_size);
+                        float gate_act = dot_product_ternary_fast(norm_h_b, exp.gate_proj.begin() + m * hidden_size, hidden_size);
+                        float up_act   = dot_product_ternary_fast(norm_h_b, exp.up_proj.begin() + m * hidden_size, hidden_size);
                         float g = std::min(7.0f, gate_act);
                         float u = clamp_val(up_act, -7.0f, 7.0f);
                         float sig = 1.0f / (1.0f + std::exp(-g));
@@ -885,7 +899,7 @@ struct maple_npu::Impl {
                         size_t e = exp_idx[k_i];
                         float weight = r_probs[e] * inv_topk_sum;
                         const bf16* down_row = layer.experts[e].down_proj.begin() + hid * moe_intermediate_size;
-                        sum += weight * dot_product_f32_bf16(exp_inter[k_i].data(), down_row, moe_intermediate_size);
+                        sum += weight * dot_product_ternary_fast(exp_inter[k_i].data(), down_row, moe_intermediate_size);
                     }
                     moe_out_b[hid] = sum;
                 }
