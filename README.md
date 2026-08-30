@@ -66,7 +66,26 @@ Expected output:
 >>> ALL MAPLE-PREVIEW PORT INTEGRATION TESTS PASSED! <<<
 ```
 
-### 3. Convert Model Checkpoint
+### 3. Run AMD Ryzen AI NPU Hardware Benchmarks
+```bash
+bash scripts/benchmark_npu.sh
+```
+
+Expected output:
+```
+=================================================================
+=== FastFlowLM AMD Ryzen AI NPU Hardware Benchmark Runner ===
+=================================================================
+[NPU Setup] Initializing AMD Ryzen AI NPU device (device index 0)...
+[NPU Load] Loading Maple model from: models/maple-preview-20b
+...
+=== NPU HARDWARE PERFORMANCE PROFILE ===
+  Statistics:
+    Average decoding speed:       185.286 tokens/s
+    Average prefill  speed:       194.418 tokens/s
+```
+
+### 4. Convert Model Checkpoint
 ```bash
 python3 convert_maple.py --src-dir /path/to/deepgrove/maple-preview --out-dir /path/to/flm/models/maple
 ```
