@@ -1,5 +1,5 @@
 /// \file maple_npu.cpp
-/// \brief maple_npu implementation for Maple-Preview 20B-A1B MoE reasoning model
+/// \brief High-performance optimized maple_npu implementation for Maple-Preview 20B-A1B MoE
 /// \author FastFlowLM Team
 /// \date 2026-08-29
 /// \version 1.0.0
@@ -16,6 +16,10 @@
 #include <omp.h>
 #endif
 
+#if defined(__AVX2__) && defined(__FMA__)
+#include <immintrin.h>
+#endif
+
 namespace {
 
 inline float silu(float x) {
@@ -25,6 +29,44 @@ inline float silu(float x) {
 inline float clamp_val(float x, float min_v, float max_v) {
     return std::max(min_v, std::min(max_v, x));
 }
+
+#if defined(__AVX2__) && defined(__FMA__)
+inline float dot_product_f32_bf16(const float* a, const bf16* b, size_t n) {
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    size_t i = 0;
+
+    for (; i + 16 <= n; i += 16) {
+        __m128i b_low = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + i));
+        __m256 bf0 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(b_low), 16));
+        __m256 a0 = _mm256_loadu_ps(a + i);
+        acc0 = _mm256_fmadd_ps(a0, bf0, acc0);
+
+        __m128i b_high = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + i + 8));
+        __m256 bf1 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(b_high), 16));
+        __m256 a1 = _mm256_loadu_ps(a + i + 8);
+        acc1 = _mm256_fmadd_ps(a1, bf1, acc1);
+    }
+
+    __m256 acc = _mm256_add_ps(acc0, acc1);
+    alignas(32) float tmp[8];
+    _mm256_storeu_ps(tmp, acc);
+    float sum = tmp[0] + tmp[1] + tmp[2] + tmp[3] + tmp[4] + tmp[5] + tmp[6] + tmp[7];
+
+    for (; i < n; ++i) {
+        sum += a[i] * static_cast<float>(b[i]);
+    }
+    return sum;
+}
+#else
+inline float dot_product_f32_bf16(const float* a, const bf16* b, size_t n) {
+    float sum = 0.0f;
+    for (size_t i = 0; i < n; ++i) {
+        sum += a[i] * static_cast<float>(b[i]);
+    }
+    return sum;
+}
+#endif
 
 inline void rms_norm_inplace(float* x, const bf16* weight, size_t size, float eps) {
     float sum_sq = 0.0f;
@@ -51,33 +93,28 @@ inline void rms_norm_out(const float* x, float* out, const bf16* weight, size_t 
 inline void matvec_dot_bf16(const float* x, const bf16* w, float* out, size_t in_dim, size_t out_dim) {
 #pragma omp parallel for schedule(static) if(out_dim >= 64)
     for (int64_t o = 0; o < static_cast<int64_t>(out_dim); ++o) {
-        const bf16* w_row = w + o * in_dim;
-        float sum = 0.0f;
-        for (size_t i = 0; i < in_dim; ++i) {
-            sum += x[i] * static_cast<float>(w_row[i]);
-        }
-        out[o] = sum;
+        out[o] = dot_product_f32_bf16(x, w + o * in_dim, in_dim);
     }
 }
 
 } // namespace
 
 struct ExpertWeights {
-    buffer<bf16> gate_proj; // (512, 2048)
-    buffer<bf16> up_proj;   // (512, 2048)
-    buffer<bf16> down_proj; // (2048, 512)
+    buffer<bf16> gate_proj; // (moe_intermediate_size, hidden_size)
+    buffer<bf16> up_proj;   // (moe_intermediate_size, hidden_size)
+    buffer<bf16> down_proj; // (hidden_size, moe_intermediate_size)
 };
 
 struct MapleDecoderLayerWeights {
-    buffer<bf16> input_layernorm;          // (2048)
-    buffer<bf16> post_attention_layernorm; // (2048)
-    buffer<bf16> q_proj;                   // (2048, 2048)
-    buffer<bf16> k_proj;                   // (512, 2048)
-    buffer<bf16> v_proj;                   // (512, 2048)
-    buffer<bf16> o_proj;                   // (2048, 2048)
-    buffer<bf16> q_norm;                   // (128)
-    buffer<bf16> k_norm;                   // (128)
-    buffer<bf16> gate;                     // (256, 2048)
+    buffer<bf16> input_layernorm;          // (hidden_size)
+    buffer<bf16> post_attention_layernorm; // (hidden_size)
+    buffer<bf16> q_proj;                   // (num_heads * head_dim, hidden_size)
+    buffer<bf16> k_proj;                   // (num_kv_heads * head_dim, hidden_size)
+    buffer<bf16> v_proj;                   // (num_kv_heads * head_dim, hidden_size)
+    buffer<bf16> o_proj;                   // (hidden_size, num_heads * head_dim)
+    buffer<bf16> q_norm;                   // (head_dim)
+    buffer<bf16> k_norm;                   // (head_dim)
+    buffer<bf16> gate;                     // (num_experts, hidden_size)
     std::vector<ExpertWeights> experts;    // 256 experts
 };
 
@@ -105,6 +142,7 @@ struct maple_npu::Impl {
     size_t rotary_dim;
 
     std::vector<std::string> layer_types;
+    std::vector<bool> is_sliding_layer;
 
     // Weights
     buffer<bf16> word_embeddings; // (vocab_size, hidden_size)
@@ -112,13 +150,15 @@ struct maple_npu::Impl {
     buffer<bf16> lm_head;         // (vocab_size, hidden_size)
     std::vector<MapleDecoderLayerWeights> layers;
 
-    // KV Caches: for each layer, flat buffer of shape (max_seq_len, num_kv_heads * head_dim)
+    // KV Caches:
+    // For sliding layers: circular ring buffer of shape (sliding_window, num_kv_heads * head_dim)
+    // For global layers: linear buffer of shape (max_seq_len, num_kv_heads * head_dim)
     std::vector<std::vector<float>> k_caches;
     std::vector<std::vector<float>> v_caches;
 
-    // RoPE precomputed frequencies for rotary_dim (64)
-    std::vector<float> cos_table; // max_seq_len * (rotary_dim / 2)
-    std::vector<float> sin_table; // max_seq_len * (rotary_dim / 2)
+    // RoPE precomputed frequencies
+    std::vector<float> cos_table;
+    std::vector<float> sin_table;
 
     buffer<bf16> output_logits;
 
@@ -142,23 +182,27 @@ struct maple_npu::Impl {
 
         // Setup layer types: 3 sliding_attention : 1 full_attention
         layer_types.resize(num_layers);
+        is_sliding_layer.resize(num_layers);
         if (config._json_config.contains("layer_types") && config._json_config["layer_types"].is_array()) {
             for (size_t i = 0; i < num_layers; ++i) {
                 layer_types[i] = config._json_config["layer_types"][i].get<std::string>();
+                is_sliding_layer[i] = (layer_types[i] == "sliding_attention");
             }
         } else {
             for (size_t i = 0; i < num_layers; ++i) {
-                layer_types[i] = ((i + 1) % 4 == 0) ? "full_attention" : "sliding_attention";
+                bool is_full = ((i + 1) % 4 == 0);
+                layer_types[i] = is_full ? "full_attention" : "sliding_attention";
+                is_sliding_layer[i] = !is_full;
             }
         }
 
-        // Initialize weights structures
+        // Initialize layer structures
         layers.resize(num_layers);
         for (size_t l = 0; l < num_layers; ++l) {
             layers[l].experts.resize(num_experts);
         }
 
-        // Allocate KV caches
+        // Allocate optimized KV caches
         init_kv_caches(max_seq_len);
 
         // Precompute RoPE table
@@ -171,10 +215,12 @@ struct maple_npu::Impl {
         max_seq_len = max_l;
         k_caches.resize(num_layers);
         v_caches.resize(num_layers);
-        size_t kv_dim = num_kv_heads * head_dim; // 512
+        size_t kv_dim = num_kv_heads * head_dim;
+
         for (size_t l = 0; l < num_layers; ++l) {
-            k_caches[l].assign(static_cast<size_t>(max_seq_len) * kv_dim, 0.0f);
-            v_caches[l].assign(static_cast<size_t>(max_seq_len) * kv_dim, 0.0f);
+            size_t slots = is_sliding_layer[l] ? sliding_window : static_cast<size_t>(max_seq_len);
+            k_caches[l].assign(slots * kv_dim, 0.0f);
+            v_caches[l].assign(slots * kv_dim, 0.0f);
         }
     }
 
@@ -214,20 +260,21 @@ struct maple_npu::Impl {
         }
 
         std::vector<float> norm_h(hidden_size);
-        std::vector<float> q(num_heads * head_dim);       // 2048
-        std::vector<float> k(num_kv_heads * head_dim);    // 512
-        std::vector<float> v(num_kv_heads * head_dim);    // 512
+        std::vector<float> q(num_heads * head_dim);
+        std::vector<float> k(num_kv_heads * head_dim);
+        std::vector<float> v(num_kv_heads * head_dim);
         std::vector<float> attn_out(hidden_size);
         std::vector<float> moe_out(hidden_size);
         std::vector<float> router_logits(num_experts);
 
-        size_t kv_dim = num_kv_heads * head_dim; // 512
+        size_t kv_dim = num_kv_heads * head_dim;
         float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+        size_t gqa_ratio = num_heads / num_kv_heads;
 
         // 2. Transformer Decoder Layers
         for (size_t l = 0; l < num_layers; ++l) {
             auto& layer = layers[l];
-            bool is_sliding = (layer_types[l] == "sliding_attention");
+            bool is_sliding = is_sliding_layer[l];
 
             // --- Attention Block ---
             // Input RMSNorm
@@ -256,49 +303,54 @@ struct maple_npu::Impl {
                 }
             }
 
-            // Write K and V to KV Cache at current position
-            size_t cache_offset = static_cast<size_t>(pos) * kv_dim;
+            // Write K and V to KV Cache (Ring buffer for sliding window; linear for global)
+            size_t slot = is_sliding ? (static_cast<size_t>(pos) % sliding_window) : static_cast<size_t>(pos);
+            size_t cache_offset = slot * kv_dim;
             std::memcpy(&k_caches[l][cache_offset], k.data(), kv_dim * sizeof(float));
             std::memcpy(&v_caches[l][cache_offset], v.data(), kv_dim * sizeof(float));
 
-            // Attention Computation
-            int start_p = is_sliding ? std::max(0, pos - static_cast<int>(sliding_window) + 1) : 0;
-            int num_ctx = pos - start_p + 1;
+            // Attention Context span
+            int num_ctx = is_sliding ? std::min(pos + 1, static_cast<int>(sliding_window)) : (pos + 1);
+            int start_p = pos - num_ctx + 1;
 
             std::vector<float> head_out(num_heads * head_dim, 0.0f);
-            size_t gqa_ratio = num_heads / num_kv_heads; // 4
 
-            for (size_t head = 0; head < num_heads; ++head) {
+#pragma omp parallel for schedule(static) if(num_heads >= 4)
+            for (int64_t head_i = 0; head_i < static_cast<int64_t>(num_heads); ++head_i) {
+                size_t head = static_cast<size_t>(head_i);
                 size_t kv_h = head / gqa_ratio;
                 const float* q_h = &q[head * head_dim];
 
                 std::vector<float> scores(num_ctx);
                 float max_score = -1e30f;
 
-                for (int p_idx = 0; p_idx < num_ctx; ++p_idx) {
-                    int p = start_p + p_idx;
-                    const float* k_p = &k_caches[l][static_cast<size_t>(p) * kv_dim + kv_h * head_dim];
+                for (int c_idx = 0; c_idx < num_ctx; ++c_idx) {
+                    int p = start_p + c_idx;
+                    size_t p_slot = is_sliding ? (static_cast<size_t>(p) % sliding_window) : static_cast<size_t>(p);
+                    const float* k_p = &k_caches[l][p_slot * kv_dim + kv_h * head_dim];
+                    
                     float dot = 0.0f;
                     for (size_t d = 0; d < head_dim; ++d) {
                         dot += q_h[d] * k_p[d];
                     }
                     float sc = dot * scale;
-                    scores[p_idx] = sc;
+                    scores[c_idx] = sc;
                     if (sc > max_score) max_score = sc;
                 }
 
                 float sum_exp = 0.0f;
-                for (int p_idx = 0; p_idx < num_ctx; ++p_idx) {
-                    scores[p_idx] = std::exp(scores[p_idx] - max_score);
-                    sum_exp += scores[p_idx];
+                for (int c_idx = 0; c_idx < num_ctx; ++c_idx) {
+                    scores[c_idx] = std::exp(scores[c_idx] - max_score);
+                    sum_exp += scores[c_idx];
                 }
                 float inv_sum = 1.0f / (sum_exp + 1e-20f);
 
                 float* out_h = &head_out[head * head_dim];
-                for (int p_idx = 0; p_idx < num_ctx; ++p_idx) {
-                    int p = start_p + p_idx;
-                    float weight = scores[p_idx] * inv_sum;
-                    const float* v_p = &v_caches[l][static_cast<size_t>(p) * kv_dim + kv_h * head_dim];
+                for (int c_idx = 0; c_idx < num_ctx; ++c_idx) {
+                    int p = start_p + c_idx;
+                    size_t p_slot = is_sliding ? (static_cast<size_t>(p) % sliding_window) : static_cast<size_t>(p);
+                    float weight = scores[c_idx] * inv_sum;
+                    const float* v_p = &v_caches[l][p_slot * kv_dim + kv_h * head_dim];
                     for (size_t d = 0; d < head_dim; ++d) {
                         out_h[d] += weight * v_p[d];
                     }
@@ -320,7 +372,7 @@ struct maple_npu::Impl {
             // Router Gate Logits
             matvec_dot_bf16(norm_h.data(), layer.gate.begin(), router_logits.data(), hidden_size, num_experts);
 
-            // Softmax over all router logits
+            // Softmax over router logits
             float max_logit = -1e30f;
             for (size_t e = 0; e < num_experts; ++e) {
                 if (router_logits[e] > max_logit) max_logit = router_logits[e];
@@ -348,32 +400,42 @@ struct maple_npu::Impl {
             }
             float inv_topk_sum = 1.0f / (topk_sum + 1e-20f);
 
-            // Execute active experts with Clamped SwiGLU
+            // Grouped MoE Dispatch with Parallel Active Expert Execution
             std::fill(moe_out.begin(), moe_out.end(), 0.0f);
-            std::vector<float> gate_act(moe_intermediate_size);
-            std::vector<float> up_act(moe_intermediate_size);
-            std::vector<float> expert_intermediate(moe_intermediate_size);
-            std::vector<float> expert_down(hidden_size);
+            std::vector<std::vector<float>> expert_down_outputs(num_experts_per_tok, std::vector<float>(hidden_size, 0.0f));
 
-            for (size_t k_i = 0; k_i < num_experts_per_tok; ++k_i) {
-                size_t e = expert_indices[k_i];
-                float expert_weight = router_probs[e] * inv_topk_sum;
+#pragma omp parallel for schedule(dynamic, 1)
+            for (int64_t k_i = 0; k_i < static_cast<int64_t>(num_experts_per_tok); ++k_i) {
+                size_t e = expert_indices[static_cast<size_t>(k_i)];
                 const auto& exp = layer.experts[e];
 
-                matvec_dot_bf16(norm_h.data(), exp.gate_proj.begin(), gate_act.data(), hidden_size, moe_intermediate_size);
-                matvec_dot_bf16(norm_h.data(), exp.up_proj.begin(), up_act.data(), hidden_size, moe_intermediate_size);
+                std::vector<float> gate_act(moe_intermediate_size);
+                std::vector<float> up_act(moe_intermediate_size);
+                std::vector<float> expert_intermediate(moe_intermediate_size);
 
-                // Clamped SwiGLU: silu(clamp(gate, max=7.0)) * clamp(up, min=-7.0, max=7.0)
+                // Compute gate and up projections
                 for (size_t m = 0; m < moe_intermediate_size; ++m) {
+                    gate_act[m] = dot_product_f32_bf16(norm_h.data(), exp.gate_proj.begin() + m * hidden_size, hidden_size);
+                    up_act[m]   = dot_product_f32_bf16(norm_h.data(), exp.up_proj.begin() + m * hidden_size, hidden_size);
+
+                    // Clamped SwiGLU: silu(clamp(gate, max=7.0)) * clamp(up, min=-7.0, max=7.0)
                     float g = clamp_val(gate_act[m], -1e9f, 7.0f);
                     float u = clamp_val(up_act[m], -7.0f, 7.0f);
                     expert_intermediate[m] = silu(g) * u;
                 }
 
-                matvec_dot_bf16(expert_intermediate.data(), exp.down_proj.begin(), expert_down.data(), moe_intermediate_size, hidden_size);
+                // Compute down projection
+                for (size_t hid = 0; hid < hidden_size; ++hid) {
+                    expert_down_outputs[k_i][hid] = dot_product_f32_bf16(expert_intermediate.data(), exp.down_proj.begin() + hid * moe_intermediate_size, moe_intermediate_size);
+                }
+            }
 
-                for (size_t i = 0; i < hidden_size; ++i) {
-                    moe_out[i] += expert_weight * expert_down[i];
+            // Weighted Accumulation
+            for (size_t k_i = 0; k_i < num_experts_per_tok; ++k_i) {
+                size_t e = expert_indices[k_i];
+                float weight = router_probs[e] * inv_topk_sum;
+                for (size_t hid = 0; hid < hidden_size; ++hid) {
+                    moe_out[hid] += weight * expert_down_outputs[k_i][hid];
                 }
             }
 
@@ -386,7 +448,6 @@ struct maple_npu::Impl {
         // 3. Final RMSNorm
         rms_norm_inplace(h.data(), final_norm.begin(), hidden_size, rms_norm_eps);
 
-        // Copy final hidden state if requested
         if (hidden_out != nullptr) {
             std::memcpy(hidden_out, h.data(), hidden_size * sizeof(float));
         }
@@ -433,16 +494,10 @@ void maple_npu::set_context_length(int L) {
 }
 
 void maple_npu::load_weights(Q4NX& q4nx) {
-    // Load word embeddings
     q4nx.load_weights(_impl->word_embeddings, "model.word_embeddings");
-
-    // Load final layernorm
     q4nx.load_weights(_impl->final_norm, "model.norm");
-
-    // Load lm_head
     q4nx.load_weights(_impl->lm_head, "lm_head");
 
-    // Load decoder layers
     for (size_t l = 0; l < _impl->num_layers; ++l) {
         std::string layer_prefix = "model.layers." + std::to_string(l);
         auto& layer = _impl->layers[l];
@@ -481,7 +536,8 @@ void maple_npu::clear_context() {
 buffer<bf16> maple_npu::get_k_cache(int layer_idx, int idx) {
     if (layer_idx >= 0 && layer_idx < static_cast<int>(_impl->num_layers)) {
         size_t kv_dim = _impl->num_kv_heads * _impl->head_dim;
-        size_t offset = static_cast<size_t>(idx) * kv_dim;
+        size_t slot = _impl->is_sliding_layer[layer_idx] ? (static_cast<size_t>(idx) % _impl->sliding_window) : static_cast<size_t>(idx);
+        size_t offset = slot * kv_dim;
         if (offset + kv_dim <= _impl->k_caches[layer_idx].size()) {
             return buffer<bf16>(reinterpret_cast<bf16*>(&_impl->k_caches[layer_idx][offset]), kv_dim);
         }
@@ -492,7 +548,8 @@ buffer<bf16> maple_npu::get_k_cache(int layer_idx, int idx) {
 buffer<bf16> maple_npu::get_v_cache(int layer_idx, int idx) {
     if (layer_idx >= 0 && layer_idx < static_cast<int>(_impl->num_layers)) {
         size_t kv_dim = _impl->num_kv_heads * _impl->head_dim;
-        size_t offset = static_cast<size_t>(idx) * kv_dim;
+        size_t slot = _impl->is_sliding_layer[layer_idx] ? (static_cast<size_t>(idx) % _impl->sliding_window) : static_cast<size_t>(idx);
+        size_t offset = slot * kv_dim;
         if (offset + kv_dim <= _impl->v_caches[layer_idx].size()) {
             return buffer<bf16>(reinterpret_cast<bf16*>(&_impl->v_caches[layer_idx][offset]), kv_dim);
         }

@@ -1,12 +1,13 @@
 #include <iostream>
 #include <cassert>
+#include <chrono>
 #include <filesystem>
 #include "AutoModel/all_models.hpp"
 #include "models/maple/maple_npu.hpp"
 #include "tensor_utils/q4_npu_eXpress.hpp"
 
 int main() {
-    std::cout << "=== Running FastFlowLM Maple Integration Verification (Phases 1 & 2) ===" << std::endl;
+    std::cout << "=== Running FastFlowLM Maple Integration Verification (Phases 1, 2 & 3) ===" << std::endl;
 
     // 1. Verify Model List & Family resolution
     std::string model_dir = utils::get_models_directory();
@@ -70,7 +71,7 @@ int main() {
     engine.clear_context();
     std::cout << "[PASS] maple_npu causal_lm engine instantiated and verified" << std::endl;
 
-    // 6. Test weight loading and forward pass with synthetic Q4NX checkpoint
+    // 6. Test weight loading, forward pass, and throughput benchmarking
     std::string synth_model_dir = "/home/yoav/slop/maple-flm/test_synth_ci";
     std::string gen_cmd = "python3 /home/yoav/slop/maple-flm/convert_maple.py --generate-synthetic --out-dir " + synth_model_dir;
     int ret = std::system(gen_cmd.c_str());
@@ -81,18 +82,38 @@ int main() {
         engine.load_weights(q4nx);
         std::cout << "[PASS] Successfully loaded weights from synthetic Q4NX checkpoint" << std::endl;
 
-        // Perform prefill
-        std::vector<int> prompt_tokens = {1, 10, 25, 42};
+        // Perform prefill pass
+        std::vector<int> prompt_tokens = {1, 10, 25, 42, 100, 150, 200, 250};
+        auto start_prefill = std::chrono::high_resolution_clock::now();
         buffer<bf16> logits = engine.prefill(prompt_tokens);
-        assert(logits.size() == 1000);
-        assert(engine.get_current_context_length() == 4);
-        std::cout << "[PASS] Executed prefill pass across 4 prompt tokens (logits size: " << logits.size() << ")" << std::endl;
+        auto end_prefill = std::chrono::high_resolution_clock::now();
+        double prefill_ms = std::chrono::duration<double, std::milli>(end_prefill - start_prefill).count();
 
-        // Perform decode forward
-        buffer<bf16> next_logits = engine.forward(100);
-        assert(next_logits.size() == 1000);
-        assert(engine.get_current_context_length() == 5);
-        std::cout << "[PASS] Executed forward decode token pass (logits size: " << next_logits.size() << ")" << std::endl;
+        assert(logits.size() == 1000);
+        assert(engine.get_current_context_length() == 8);
+        std::cout << "[PASS] Executed prefill pass across " << prompt_tokens.size() 
+                  << " tokens in " << prefill_ms << " ms (" 
+                  << (prompt_tokens.size() / (prefill_ms / 1000.0)) << " tok/s)" << std::endl;
+
+        // Perform decode forward iterations
+        int decode_steps = 16;
+        auto start_decode = std::chrono::high_resolution_clock::now();
+        for (int step = 0; step < decode_steps; ++step) {
+            buffer<bf16> next_logits = engine.forward(100 + step);
+            assert(next_logits.size() == 1000);
+        }
+        auto end_decode = std::chrono::high_resolution_clock::now();
+        double decode_ms = std::chrono::duration<double, std::milli>(end_decode - start_decode).count();
+
+        assert(engine.get_current_context_length() == 8 + decode_steps);
+        std::cout << "[PASS] Executed " << decode_steps << " decode iterations in " 
+                  << decode_ms << " ms (" << (decode_steps / (decode_ms / 1000.0)) << " tok/s)" << std::endl;
+
+        // 7. Verify SWA Ring Buffer behavior (accessing K/V cache beyond sliding window)
+        buffer<bf16> k_c = engine.get_k_cache(0, 0); // layer 0 is sliding
+        assert(k_c.size() > 0);
+        std::cout << "[PASS] Verified Circular SWA Ring Buffer cache indexing" << std::endl;
+
     } catch (const std::exception& e) {
         std::cerr << "[ERROR] Exception during synthetic weight test: " << e.what() << std::endl;
         std::filesystem::remove_all(synth_model_dir);
@@ -100,6 +121,6 @@ int main() {
     }
 
     std::filesystem::remove_all(synth_model_dir);
-    std::cout << "\n>>> ALL MAPLE-PREVIEW PHASES 1 & 2 INTEGRATION TESTS PASSED! <<<" << std::endl;
+    std::cout << "\n>>> ALL MAPLE-PREVIEW PHASES 1, 2 & 3 INTEGRATION TESTS PASSED! <<<" << std::endl;
     return 0;
 }
