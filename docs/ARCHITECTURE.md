@@ -84,9 +84,48 @@ FastFlowLM Architecture
 │   └── maple_npu (maple_npu.hpp / maple_npu.cpp)
 │       ├── Word embeddings lookup
 │       ├── 24 Transformer decoder layers (GQA + SWA + Top-8 MoE)
-│       ├── KV-cache manager with sliding window mask
-│       └── Final RMSNorm + LM head projection
+│       ├── Circular 512-slot SWA Ring Buffers (99.6% cache reduction)
+│       ├── FlashAttention-style Tiled Online Softmax (128K context)
+│       ├── Parallel Grouped MoE Dispatch with OpenMP
+│       └── Hardware NPU LMHead offload (zero-copy DMA)
 │
 └── Weight Loader
     └── Q4NX / SafeTensors parser (safe_tensors.hpp)
 ```
+
+---
+
+## 5. NPU Hardware Execution Pipeline & 128K Memory Design
+
+```mermaid
+graph TD
+    InputToken["Input Token ID"] --> Emb["Embedding Lookup"]
+    Emb --> Norm1["Input RMSNorm"]
+    Norm1 --> QKV["QKV Projections (GQA 16:4)"]
+    QKV --> QKNorm["QK-Norm (RMSNorm per Head)"]
+    QKNorm --> Branch{"Layer Type?"}
+    Branch -->|"Sliding Window (18 layers)"| SWA["Partial RoPE (dim 64)<br>512-Slot Circular Ring Buffer"]
+    Branch -->|"Global (6 layers)"| Global["No-PE (Zero RoPE)<br>Tiled Online Softmax (128K)"]
+    SWA --> AttnOut["Attention Out + Residual"]
+    Global --> AttnOut
+    AttnOut --> PostNorm["Post-Attention RMSNorm"]
+    PostNorm --> Router["Router Gate (256 Experts)"]
+    Router --> Top8["Parallel Top-8 Selection"]
+    Top8 --> MoE["Grouped Clamped SwiGLU & Down Proj"]
+    MoE --> MoEOut["Weighted Accumulator + Residual"]
+    MoEOut --> FinalNorm["Final RMSNorm"]
+    FinalNorm --> NPUHead["AMD Ryzen AI NPU: LMHead Offload"]
+    NPUHead --> Logits["Output Vocabulary Logits"]
+```
+
+---
+
+## 6. Memory Footprint at 128K Context
+
+| Component | Dimensions | Memory Footprint |
+|---|---|---|
+| **Model Weights (Q4NX / TQ2_0)** | 20B parameters (256 experts $\times$ 24 layers) | **~5.5 GB** |
+| **Sliding Layers KV Cache (18 layers)** | $18 \times 512 \text{ slots} \times 512 \text{ dim} \times 4 \text{ bytes}$ | **18.9 MB** (constant $O(1)$) |
+| **Global Layers KV Cache (6 layers)** | $6 \times 131,072 \text{ slots} \times 512 \text{ dim} \times 4 \text{ bytes}$ | **1.61 GB** |
+| **Total Runtime RAM at 128K** | Model + KV Caches + Active Buffers | **~7.13 GB** |
+
