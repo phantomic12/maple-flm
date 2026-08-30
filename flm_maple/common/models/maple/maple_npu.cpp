@@ -348,10 +348,20 @@ struct maple_npu::Impl {
     std::vector<float> batch_router_logits;
 
     buffer<bf16> output_logits;
+    PowerMode power_mode;
 
     Impl(LM_Config cfg, npu_xclbin_manager* npu_mgr, int MAX_L)
-        : config(cfg), npu(npu_mgr), max_seq_len(static_cast<uint32_t>(MAX_L)), cur_pos(0), checkpoint_pos(0) {
+        : config(cfg), npu(npu_mgr), max_seq_len(static_cast<uint32_t>(MAX_L)), cur_pos(0), checkpoint_pos(0), power_mode(PowerMode::PERFORMANCE) {
         
+        const char* mode_env = std::getenv("FLM_POWER_MODE");
+        if (!mode_env) mode_env = std::getenv("FLM_MODE");
+        if (mode_env && (std::string(mode_env) == "battery" || std::string(mode_env) == "efficiency")) {
+            power_mode = PowerMode::BATTERY_EFFICIENCY;
+#if defined(_OPENMP)
+            omp_set_num_threads(4);
+#endif
+        }
+
         vocab_size = config.get<u32>("vocab_size", 151936);
         hidden_size = config.get<u32>("hidden_size", 2048);
         num_layers = config.get<u32>("num_hidden_layers", 24);
@@ -1072,4 +1082,19 @@ int maple_npu::checkpoint() {
 int maple_npu::restore() {
     _impl->cur_pos = _impl->checkpoint_pos;
     return _impl->cur_pos;
+}
+
+void maple_npu::set_power_mode(PowerMode mode) {
+    _impl->power_mode = mode;
+#if defined(_OPENMP)
+    if (mode == PowerMode::BATTERY_EFFICIENCY) {
+        omp_set_num_threads(4);
+    } else {
+        omp_set_num_threads(24);
+    }
+#endif
+}
+
+maple_npu::PowerMode maple_npu::get_power_mode() const {
+    return _impl->power_mode;
 }

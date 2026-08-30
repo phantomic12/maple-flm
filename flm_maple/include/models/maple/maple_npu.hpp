@@ -70,6 +70,15 @@ public:
     /// \brief restore KV cache and state from checkpoint
     int restore() override;
 
+    enum class PowerMode {
+        PERFORMANCE,        ///< High throughput mode (24 CPU threads + iGPU Vulkan + NPU)
+        BATTERY_EFFICIENCY  ///< Battery saver mode (NPU full offload + Zen 5c low power cores, 0W iGPU)
+    };
+
+    /// \brief configure power mode (Performance vs Battery Saver)
+    void set_power_mode(PowerMode mode);
+    PowerMode get_power_mode() const;
+
 private:
     struct Impl;
     Impl* _impl;
