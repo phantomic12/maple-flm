@@ -15,4 +15,5 @@ __pycache__/
 *.q4nx
 test_maple_src/
 test_maple_out/
+test_synth_*/
 .DS_Store

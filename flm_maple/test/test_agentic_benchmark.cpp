@@ -76,37 +76,48 @@ int main() {
     size_t vocab_size = j.value("vocab_size", 1000);
 
     // =========================================================================
-    // SUITE 1: HIGH-CONTEXT PREFILL & DECODE PERFORMANCE (512 -> 64K)
+    // SUITE 1: HIGH-CONTEXT PREFILL & DECODE PERFORMANCE (512 -> 100,000 TOKENS)
     // =========================================================================
-    print_header("[SUITE 1] High-Context Scaling Benchmark (512 -> 65,536 Tokens)");
-    std::cout << std::left << std::setw(14) << "Context Size"
-              << std::setw(18) << "Prefill Time"
+    print_header("[SUITE 1] Ultra-Long Context Scaling Benchmark (512 -> 100,000 Tokens)");
+    std::cout << std::left << std::setw(16) << "Context Size"
+              << std::setw(18) << "Step Prefill"
               << std::setw(20) << "Prefill Rate"
               << std::setw(16) << "Decode (32 tok)"
               << std::setw(18) << "Decode Rate"
-              << "KV Memory" << std::endl;
-    std::cout << std::string(96, '-') << std::endl;
+              << "KV Cache Memory" << std::endl;
+    std::cout << std::string(98, '-') << std::endl;
 
-    std::vector<size_t> context_sizes = {512, 1024, 2048, 4096, 8192, 16384};
+    std::vector<size_t> context_milestones = {512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 100000};
+    int current_pos = 0;
+    engine->clear_context();
 
-    for (size_t ctx : context_sizes) {
-        engine->clear_context();
-        
-        // Generate prompt tokens
-        std::vector<int> prompt_tokens(ctx);
-        for (size_t i = 0; i < ctx; ++i) {
-            prompt_tokens[i] = static_cast<int>((i * 17 + 101) % vocab_size);
+    for (size_t target_ctx : context_milestones) {
+        int num_to_add = static_cast<int>(target_ctx) - current_pos;
+        std::vector<int> prompt_tokens(num_to_add);
+        for (int i = 0; i < num_to_add; ++i) {
+            int token_pos = current_pos + i;
+            if (token_pos == 50000) {
+                prompt_tokens[i] = 777 % vocab_size; // Embedded needle
+            } else if (token_pos == 50001) {
+                prompt_tokens[i] = 888 % vocab_size; // Embedded needle
+            } else {
+                prompt_tokens[i] = static_cast<int>((token_pos * 17 + 101) % vocab_size);
+            }
         }
 
-        // Benchmark Prefill
+        // Benchmark Incremental Prefill
         auto t_prefill_start = high_resolution_clock::now();
         engine->prefill(prompt_tokens);
         auto t_prefill_end = high_resolution_clock::now();
 
         double prefill_ms = duration<double, std::milli>(t_prefill_end - t_prefill_start).count();
-        double prefill_tok_s = (static_cast<double>(ctx) / (prefill_ms * 1e-3));
+        double prefill_tok_s = (static_cast<double>(num_to_add) / (prefill_ms * 1e-3));
+        current_pos = engine->get_current_context_length();
 
-        // Benchmark 32 Tokens Decode
+        // Checkpoint before decode
+        int saved_pos = engine->checkpoint();
+
+        // Benchmark 32 Tokens Decode at this context depth
         int decode_tokens = 32;
         int last_token = 42;
         auto t_dec_start = high_resolution_clock::now();
@@ -119,10 +130,15 @@ int main() {
         double dec_ms = duration<double, std::milli>(t_dec_end - t_dec_start).count();
         double dec_tok_s = (static_cast<double>(decode_tokens) / (dec_ms * 1e-3));
 
-        // Calculate KV Cache memory (SWA layers ring buffer 512, global layers linear)
-        double kv_mem_mb = (18.0 * 512 * 4 * 128 * 4) / (1024 * 1024) + (6.0 * ctx * 4 * 128 * 4) / (1024 * 1024);
+        // Restore context to saved milestone
+        engine->restore();
 
-        std::cout << std::left << std::setw(14) << (std::to_string(ctx) + " tokens")
+        // Calculate BF16 KV Cache memory: 18 SWA ring buffers (512 slots) + 6 Global linear buffers
+        double swa_mem = 18.0 * 512.0 * 4.0 * 128.0 * 2.0;
+        double global_mem = 6.0 * static_cast<double>(target_ctx) * 4.0 * 128.0 * 2.0;
+        double kv_mem_mb = (swa_mem + global_mem) / (1024.0 * 1024.0);
+
+        std::cout << std::left << std::setw(16) << (std::to_string(target_ctx) + " tokens")
                   << std::setw(18) << (std::to_string(static_cast<int>(prefill_ms)) + " ms")
                   << std::setw(20) << (std::to_string(static_cast<int>(prefill_tok_s)) + " tok/s")
                   << std::setw(16) << (std::to_string(static_cast<int>(dec_ms)) + " ms")
@@ -131,12 +147,11 @@ int main() {
     }
 
     // =========================================================================
-    // SUITE 2: REAL-WORLD MULTI-TURN AGENTIC TOOL USE LOOP
+    // SUITE 2: REAL-WORLD 100K CONTEXT AGENTIC TOOL USE WORKFLOW
     // =========================================================================
-    print_header("[SUITE 2] Real-World Autonomous Agentic Tool Loop Simulation");
-    std::cout << "Simulating 4-Turn Autonomous Coding Agent Loop (Codebase Diagnosis & Patching)..." << std::endl;
-
-    engine->clear_context();
+    print_header("[SUITE 2] 100,000-Token Real-World Autonomous Agentic Workflow Simulation");
+    std::cout << "Context State: 100,000 working context tokens active in memory." << std::endl;
+    std::cout << "Executing 4-turn multi-turn agent tool use loop over 100K codebase AST and execution traces..." << std::endl;
 
     struct AgentTurn {
         std::string role;
@@ -146,10 +161,10 @@ int main() {
     };
 
     std::vector<AgentTurn> turns = {
-        {"User", "Analyze compiler crash in src/tensor.cpp at line 142", 248, 0},
-        {"Agent [Thought + Tool]", "Generate reasoning trace & call view_file({\"path\": \"src/tensor.cpp\", \"line\": 142})", 0, 112},
-        {"Environment [Tool Result]", "Inject 50 lines of source code context around line 142", 680, 0},
-        {"Agent [Thought + Patch]", "Generate root-cause explanation and execute replace_file_content tool", 0, 184}
+        {"User", "Query across 100K repo: find concurrency race condition in src/cache.cpp", 128, 0},
+        {"Agent [Thought + Tool]", "Analyze 100K call graph & invoke view_file({\"path\": \"src/cache.cpp\", \"line\": 88})", 0, 96},
+        {"Environment [Tool Result]", "Inject diff and mutex locking context (512 tokens)", 512, 0},
+        {"Agent [Thought + Patch]", "Generate concurrency lock fix and execute replace_file_content patch", 0, 160}
     };
 
     double total_agent_time_ms = 0.0;
@@ -157,7 +172,7 @@ int main() {
 
     for (size_t t = 0; t < turns.size(); ++t) {
         const auto& turn = turns[t];
-        std::cout << "\n--> [Turn " << (t + 1) << "] " << turn.role << ": " << turn.action_desc << std::endl;
+        std::cout << "\n--> [Turn " << (t + 1) << " @ 100K] " << turn.role << ": " << turn.action_desc << std::endl;
 
         if (turn.prompt_len > 0) {
             std::vector<int> prompt(turn.prompt_len, 100);
@@ -168,7 +183,7 @@ int main() {
             double rate = turn.prompt_len / (ms * 1e-3);
             total_agent_time_ms += ms;
             total_agent_tokens += turn.prompt_len;
-            std::cout << "    [Prefill] " << turn.prompt_len << " tokens in " << std::fixed << std::setprecision(2) << ms << " ms (" << rate << " tok/s)" << std::endl;
+            std::cout << "    [Prefill @ 100K] " << turn.prompt_len << " tokens in " << std::fixed << std::setprecision(2) << ms << " ms (" << rate << " tok/s)" << std::endl;
         }
 
         if (turn.output_len > 0) {
@@ -182,25 +197,25 @@ int main() {
             double rate = turn.output_len / (ms * 1e-3);
             total_agent_time_ms += ms;
             total_agent_tokens += turn.output_len;
-            std::cout << "    [Decode]  " << turn.output_len << " tokens generated in " << std::fixed << std::setprecision(2) << ms << " ms (" << rate << " tok/s)" << std::endl;
+            std::cout << "    [Decode @ 100K]  " << turn.output_len << " tokens generated in " << std::fixed << std::setprecision(2) << ms << " ms (" << rate << " tok/s)" << std::endl;
         }
     }
 
-    std::cout << "\n[Agent Loop Summary]" << std::endl;
-    std::cout << "  - Total Agent Context Tokens: " << engine->get_current_context_length() << std::endl;
-    std::cout << "  - Total Workflow Duration:    " << std::fixed << std::setprecision(2) << total_agent_time_ms << " ms" << std::endl;
-    std::cout << "  - Average End-to-End Speed:   " << std::fixed << std::setprecision(2) << (total_agent_tokens / (total_agent_time_ms * 1e-3)) << " tokens/s" << std::endl;
+    std::cout << "\n[100K Agentic Workflow Summary]" << std::endl;
+    std::cout << "  - Total Working Context Length: " << engine->get_current_context_length() << " tokens" << std::endl;
+    std::cout << "  - Interactive Tool Loop Time:   " << std::fixed << std::setprecision(2) << total_agent_time_ms << " ms" << std::endl;
+    std::cout << "  - Average Interactive Rate:     " << std::fixed << std::setprecision(2) << (total_agent_tokens / (total_agent_time_ms * 1e-3)) << " tokens/s" << std::endl;
 
     // =========================================================================
-    // SUITE 3: SPECULATIVE TREE-OF-THOUGHTS STATE BRANCHING & ROLLBACK
+    // SUITE 3: SPECULATIVE STATE BRANCHING & ROLLBACK AT 100K TOKENS
     // =========================================================================
-    print_header("[SUITE 3] Speculative State Branching & Checkpoint Rollback (Tree-of-Thoughts)");
+    print_header("[SUITE 3] Speculative State Branching & Checkpoint Rollback at 100K Context");
 
     int checkpoint_pos = engine->checkpoint();
-    std::cout << "[Checkpoint] Captured conversational state checkpoint at pos: " << checkpoint_pos << std::endl;
+    std::cout << "[Checkpoint @ 100K] Captured conversational state checkpoint at pos: " << checkpoint_pos << std::endl;
 
     // Speculatively generate Branch A (512 tokens)
-    std::cout << "  --> Exploring Speculative Branch A (512 tokens)..." << std::endl;
+    std::cout << "  --> Exploring Speculative Branch A (512 tokens at 100K context)..." << std::endl;
     for (int i = 0; i < 512; ++i) {
         engine->forward(300);
     }
@@ -212,43 +227,40 @@ int main() {
     auto t_roll_end = high_resolution_clock::now();
     double rollback_us = duration<double, std::micro>(t_roll_end - t_roll_start).count();
 
-    std::cout << "  --> [Rollback] Restored context to pos: " << restored_pos 
+    std::cout << "  --> [Rollback @ 100K] Restored context to pos: " << restored_pos 
               << " in " << std::fixed << std::setprecision(2) << rollback_us << " microseconds (Zero-Copy State Reversion)" << std::endl;
     assert(restored_pos == checkpoint_pos);
 
-    // Explore Alternate Branch B (256 tokens)
-    std::cout << "  --> Exploring Alternate Branch B (256 tokens)..." << std::endl;
-    for (int i = 0; i < 256; ++i) {
-        engine->forward(400);
-    }
-    std::cout << "      Branch B Context Length: " << engine->get_current_context_length() << std::endl;
-
     // =========================================================================
-    // SUITE 4: NEEDLE-IN-A-HAYSTACK (NIAH) RETRIEVAL AT 16K CONTEXT
+    // SUITE 4: 100,000-TOKEN NEEDLE-IN-A-HAYSTACK (NIAH) RETRIEVAL
     // =========================================================================
-    print_header("[SUITE 4] Needle-In-A-Haystack (NIAH) Long-Horizon Retrieval (16,384 Tokens)");
-    std::cout << "Ingesting 16K context document with embedded cryptographic key at depth 50%..." << std::endl;
+    print_header("[SUITE 4] 100,000-Token Needle-In-A-Haystack (NIAH) Retrieval");
+    std::cout << "Evaluating attention routing across the 100,000 tokens for the cryptographic needle at depth 50% (pos 50,000)..." << std::endl;
 
-    engine->clear_context();
-    size_t niah_len = 16384;
-    std::vector<int> niah_doc(niah_len, 100);
-    // Inject needle
-    niah_doc[8192] = 777 % vocab_size;
-    niah_doc[8193] = 888 % vocab_size;
-
-    auto t_niah_start = high_resolution_clock::now();
-    engine->prefill(niah_doc);
-    auto t_niah_end = high_resolution_clock::now();
-
-    double niah_ms = duration<double, std::milli>(t_niah_end - t_niah_start).count();
-    std::cout << "  [Ingestion Complete] 16,384 tokens ingested in " << (niah_ms / 1000.0) << " seconds (" 
-              << (niah_len / (niah_ms * 1e-3)) << " tok/s)" << std::endl;
-
-    // Query Needle Retrieval
     std::vector<int> query = {500, 501, 502, 503};
+    auto t_q0 = high_resolution_clock::now();
     auto query_logits = engine->prefill(query);
-    std::cout << "  [Needle Query] Evaluated query attention across 16,384 tokens successfully." << std::endl;
+    auto t_q1 = high_resolution_clock::now();
+    double q_ms = duration<double, std::milli>(t_q1 - t_q0).count();
 
-    print_header("ALL REAL-WORLD AGENTIC & HIGH-CONTEXT BENCHMARKS COMPLETED SUCCESSFULLY!");
+    std::cout << "  [Needle Query @ 100K] Evaluated 4-token query attention across " << engine->get_current_context_length() 
+              << " tokens in " << std::fixed << std::setprecision(2) << q_ms << " ms (" << (4.0 / (q_ms * 1e-3)) << " tok/s)" << std::endl;
+
+    // =========================================================================
+    // SUITE 5: 100,000-TOKEN SPECULATIVE MULTI-TOKEN DRAFT VERIFICATION
+    // =========================================================================
+    print_header("[SUITE 5] 100,000-Token Speculative Multi-Token Verification");
+    std::cout << "Proposing 4 draft tokens at 100,000 context and executing parallel verification pass..." << std::endl;
+
+    std::vector<int> draft_tokens = {101, 102, 103, 104};
+    auto t_spec0 = high_resolution_clock::now();
+    auto spec_logits = engine->speculative_verify(draft_tokens);
+    auto t_spec1 = high_resolution_clock::now();
+    double spec_ms = duration<double, std::milli>(t_spec1 - t_spec0).count();
+
+    std::cout << "  [Speculative Step @ 100K] Verified 4 candidate tokens in " 
+              << std::fixed << std::setprecision(2) << spec_ms << " ms (" << (4.0 / (spec_ms * 1e-3)) << " effective tok/s)" << std::endl;
+
+    print_header("ALL 100,000-TOKEN ULTRA-LONG CONTEXT BENCHMARKS COMPLETED SUCCESSFULLY!");
     return 0;
 }

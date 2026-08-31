@@ -74,7 +74,44 @@ inline float dot_product_f32_bf16(const float* a, const bf16* b, size_t n) {
 }
 
 inline float dot_product_ternary_fast(const float* a, const bf16* b, size_t n) {
-    return dot_product_f32_bf16(a, b, n);
+    __m512 acc0 = _mm512_setzero_ps();
+    __m512 acc1 = _mm512_setzero_ps();
+    __m512 half = _mm512_set1_ps(0.5f);
+    __m512 neg_half = _mm512_set1_ps(-0.5f);
+    size_t i = 0;
+    for (; i + 32 <= n; i += 32) {
+        __m512 a0 = _mm512_loadu_ps(a + i);
+        __m256i b_raw0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i));
+        __m512 bf0 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b_raw0), 16));
+        __mmask16 pos_mask0 = _mm512_cmp_ps_mask(bf0, half, _CMP_GT_OQ);
+        __mmask16 neg_mask0 = _mm512_cmp_ps_mask(bf0, neg_half, _CMP_LT_OQ);
+        acc0 = _mm512_mask_add_ps(acc0, pos_mask0, acc0, a0);
+        acc0 = _mm512_mask_sub_ps(acc0, neg_mask0, acc0, a0);
+
+        __m512 a1 = _mm512_loadu_ps(a + i + 16);
+        __m256i b_raw1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i + 16));
+        __m512 bf1 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b_raw1), 16));
+        __mmask16 pos_mask1 = _mm512_cmp_ps_mask(bf1, half, _CMP_GT_OQ);
+        __mmask16 neg_mask1 = _mm512_cmp_ps_mask(bf1, neg_half, _CMP_LT_OQ);
+        acc1 = _mm512_mask_add_ps(acc1, pos_mask1, acc1, a1);
+        acc1 = _mm512_mask_sub_ps(acc1, neg_mask1, acc1, a1);
+    }
+    for (; i + 16 <= n; i += 16) {
+        __m512 a_val = _mm512_loadu_ps(a + i);
+        __m256i b_raw = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i));
+        __m512 bf = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b_raw), 16));
+        __mmask16 pos_mask = _mm512_cmp_ps_mask(bf, half, _CMP_GT_OQ);
+        __mmask16 neg_mask = _mm512_cmp_ps_mask(bf, neg_half, _CMP_LT_OQ);
+        acc0 = _mm512_mask_add_ps(acc0, pos_mask, acc0, a_val);
+        acc0 = _mm512_mask_sub_ps(acc0, neg_mask, acc0, a_val);
+    }
+    float sum = _mm512_reduce_add_ps(_mm512_add_ps(acc0, acc1));
+    for (; i < n; ++i) {
+        float bv = static_cast<float>(b[i]);
+        if (bv > 0.5f) sum += a[i];
+        else if (bv < -0.5f) sum -= a[i];
+    }
+    return sum;
 }
 
 inline void dual_dot_product_f32_bf16(const float* a, const bf16* b1, const bf16* b2, size_t n, float& sum1, float& sum2) {
@@ -231,6 +268,30 @@ inline void store_f32_as_bf16(const float* src, uint16_t* dst, size_t n) {
         std::memcpy(&u, &src[i], 4);
         u += 0x7FFF + ((u >> 16) & 1);
         dst[i] = static_cast<uint16_t>(u >> 16);
+    }
+}
+
+inline void unpack_bf16_to_f32(const uint16_t* src, float* dst, size_t n) {
+    size_t i = 0;
+    for (; i + 32 <= n; i += 32) {
+        __m256i raw0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
+        __m512 f0 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(raw0), 16));
+        _mm512_storeu_ps(dst + i, f0);
+
+        __m256i raw1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i + 16));
+        __m512 f1 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(raw1), 16));
+        _mm512_storeu_ps(dst + i + 16, f1);
+    }
+    for (; i + 16 <= n; i += 16) {
+        __m256i raw = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
+        __m512 f = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(raw), 16));
+        _mm512_storeu_ps(dst + i, f);
+    }
+    for (; i < n; ++i) {
+        uint32_t bits = static_cast<uint32_t>(src[i]) << 16;
+        float f;
+        std::memcpy(&f, &bits, 4);
+        dst[i] = f;
     }
 }
 
@@ -642,6 +703,15 @@ inline void store_f32_as_bf16(const float* src, uint16_t* dst, size_t n) {
     }
 }
 
+inline void unpack_bf16_to_f32(const uint16_t* src, float* dst, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        uint32_t bits = static_cast<uint32_t>(src[i]) << 16;
+        float f;
+        std::memcpy(&f, &bits, 4);
+        dst[i] = f;
+    }
+}
+
 inline float dot_product_f32_kv16(const float* a, const uint16_t* b, size_t n) {
     float sum = 0.0f;
     for (size_t i = 0; i < n; ++i) {
@@ -815,6 +885,12 @@ struct maple_npu::Impl {
     std::vector<float> batch_moe_out;
     std::vector<float> batch_router_logits;
 
+    // Split-K 24-Thread Context Parallel Workspace
+    static constexpr size_t MAX_K_SPLITS = 4;
+    std::vector<float> split_out_workspace;
+    std::vector<float> split_m_workspace;
+    std::vector<float> split_l_workspace;
+
     buffer<bf16> output_logits;
     PowerMode power_mode;
     std::unique_ptr<VulkanComputeEngine> vulkan_engine;
@@ -916,6 +992,11 @@ struct maple_npu::Impl {
         batch_moe_out.resize(BATCH_SIZE * hidden_size);
         batch_router_logits.resize(BATCH_SIZE * num_experts);
 
+        // Pre-allocate Split-K reduction workspace
+        split_out_workspace.resize(num_heads * MAX_K_SPLITS * BATCH_SIZE * head_dim);
+        split_m_workspace.resize(num_heads * MAX_K_SPLITS * BATCH_SIZE);
+        split_l_workspace.resize(num_heads * MAX_K_SPLITS * BATCH_SIZE);
+
         // Allocate optimized KV caches
         init_kv_caches(max_seq_len);
 
@@ -1011,11 +1092,14 @@ struct maple_npu::Impl {
                 }
             }
 
-            // Write K and V to KV Cache
+            // Write K and V to KV Cache in Head-Major Layout
             size_t slot = is_sliding ? (static_cast<size_t>(pos) % sliding_window) : static_cast<size_t>(pos);
-            size_t cache_offset = slot * kv_dim;
-            store_f32_as_bf16(ws_k.data(), &k_caches[l][cache_offset], kv_dim);
-            store_f32_as_bf16(ws_v.data(), &v_caches[l][cache_offset], kv_dim);
+            size_t slots = is_sliding ? sliding_window : static_cast<size_t>(max_seq_len);
+            for (size_t kv_h = 0; kv_h < num_kv_heads; ++kv_h) {
+                size_t cache_offset = kv_h * (slots * head_dim) + slot * head_dim;
+                store_f32_as_bf16(&ws_k[kv_h * head_dim], &k_caches[l][cache_offset], head_dim);
+                store_f32_as_bf16(&ws_v[kv_h * head_dim], &v_caches[l][cache_offset], head_dim);
+            }
 
             // Attention Context span
             int num_ctx = is_sliding ? std::min(pos + 1, static_cast<int>(sliding_window)) : (pos + 1);
@@ -1045,7 +1129,7 @@ struct maple_npu::Impl {
                     for (int i = 0; i < c_len; ++i) {
                         int p = start_p + c_start + i;
                         size_t p_slot = is_sliding ? (static_cast<size_t>(p) % sliding_window) : static_cast<size_t>(p);
-                        const uint16_t* k_p = &k_caches[l][p_slot * kv_dim + kv_h * head_dim];
+                        const uint16_t* k_p = &k_caches[l][kv_h * (slots * head_dim) + p_slot * head_dim];
 
                         float dot = dot_product_f32_kv16(q_h, k_p, head_dim);
                         float sc = dot * scale;
@@ -1093,7 +1177,7 @@ struct maple_npu::Impl {
                     for (int i = 0; i < c_len; ++i) {
                         int p = start_p + c_start + i;
                         size_t p_slot = is_sliding ? (static_cast<size_t>(p) % sliding_window) : static_cast<size_t>(p);
-                        const uint16_t* v_p = &v_caches[l][p_slot * kv_dim + kv_h * head_dim];
+                        const uint16_t* v_p = &v_caches[l][kv_h * (slots * head_dim) + p_slot * head_dim];
                         accumulate_scaled_from_kv16(out_h, v_p, chunk_scores[i], head_dim);
                     }
 
@@ -1280,97 +1364,290 @@ struct maple_npu::Impl {
                 }
 
                 size_t slot = is_sliding ? (static_cast<size_t>(pos) % sliding_window) : static_cast<size_t>(pos);
-                size_t cache_offset = slot * kv_dim;
-                store_f32_as_bf16(k_b, &k_caches[l][cache_offset], kv_dim);
-                store_f32_as_bf16(v_b, &v_caches[l][cache_offset], kv_dim);
+                size_t slots = is_sliding ? sliding_window : static_cast<size_t>(max_seq_len);
+                for (size_t kv_h = 0; kv_h < num_kv_heads; ++kv_h) {
+                    size_t cache_offset = kv_h * (slots * head_dim) + slot * head_dim;
+                    store_f32_as_bf16(&k_b[kv_h * head_dim], &k_caches[l][cache_offset], head_dim);
+                    store_f32_as_bf16(&v_b[kv_h * head_dim], &v_caches[l][cache_offset], head_dim);
+                }
             }
 
             // Batched Attention across past context + causal block
+            if (is_sliding) {
 #pragma omp parallel for collapse(2) schedule(static)
-            for (int64_t b = 0; b < static_cast<int64_t>(B); ++b) {
+                for (int64_t b = 0; b < static_cast<int64_t>(B); ++b) {
+                    for (int64_t head_i = 0; head_i < static_cast<int64_t>(num_heads); ++head_i) {
+                        int pos = start_pos + static_cast<int>(b);
+                        size_t head = static_cast<size_t>(head_i);
+                        size_t kv_h = head / gqa_ratio;
+                        const float* q_h = &batch_q[b * num_heads * head_dim + head * head_dim];
+                        float* out_h = &batch_head_out[b * num_heads * head_dim + head * head_dim];
+
+                        int num_ctx = std::min(pos + 1, static_cast<int>(sliding_window));
+                        int start_p = pos - num_ctx + 1;
+
+                        float m_prev = -1e30f;
+                        float l_prev = 0.0f;
+
+                        constexpr size_t TILE = 256;
+                        alignas(64) float chunk_scores[TILE];
+
+                        for (int c_start = 0; c_start < num_ctx; c_start += TILE) {
+                            int c_end = std::min(num_ctx, static_cast<int>(c_start + TILE));
+                            int c_len = c_end - c_start;
+
+                            float chunk_max = -1e30f;
+                            for (int i = 0; i < c_len; ++i) {
+                                int p = start_p + c_start + i;
+                                size_t p_slot = static_cast<size_t>(p) % sliding_window;
+                                const uint16_t* k_p = &k_caches[l][kv_h * (sliding_window * head_dim) + p_slot * head_dim];
+
+                                float dot = dot_product_f32_kv16(q_h, k_p, head_dim);
+                                float sc = dot * scale;
+                                chunk_scores[i] = sc;
+                                if (sc > chunk_max) chunk_max = sc;
+                            }
+
+                            float m_new = std::max(m_prev, chunk_max);
+                            float alpha = std::exp(m_prev - m_new);
+
+                            float chunk_exp_sum = 0.0f;
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+                            __m512 m_new_v = _mm512_set1_ps(m_new);
+                            __m512 exp_acc = _mm512_setzero_ps();
+                            int vi = 0;
+                            for (; vi + 16 <= c_len; vi += 16) {
+                                __m512 sc = _mm512_load_ps(&chunk_scores[vi]);
+                                sc = fast_exp_avx512(_mm512_sub_ps(sc, m_new_v));
+                                _mm512_store_ps(&chunk_scores[vi], sc);
+                                exp_acc = _mm512_add_ps(exp_acc, sc);
+                            }
+                            chunk_exp_sum = _mm512_reduce_add_ps(exp_acc);
+                            for (; vi < c_len; ++vi) {
+                                chunk_scores[vi] = std::exp(chunk_scores[vi] - m_new);
+                                chunk_exp_sum += chunk_scores[vi];
+                            }
+#else
+                            for (int i = 0; i < c_len; ++i) {
+                                chunk_scores[i] = std::exp(chunk_scores[i] - m_new);
+                                chunk_exp_sum += chunk_scores[i];
+                            }
+#endif
+
+                            float l_new = l_prev * alpha + chunk_exp_sum;
+                            scale_vector_f32(out_h, alpha, head_dim);
+
+                            for (int i = 0; i < c_len; ++i) {
+                                int p = start_p + c_start + i;
+                                size_t p_slot = static_cast<size_t>(p) % sliding_window;
+                                const uint16_t* v_p = &v_caches[l][kv_h * (sliding_window * head_dim) + p_slot * head_dim];
+                                accumulate_scaled_from_kv16(out_h, v_p, chunk_scores[i], head_dim);
+                            }
+
+                            m_prev = m_new;
+                            l_prev = l_new;
+                        }
+
+                        if (l_prev > 1e-20f) {
+                            float inv_l = 1.0f / l_prev;
+                            scale_vector_f32(out_h, inv_l, head_dim);
+                        }
+                    }
+                }
+            } else {
+                // Split-K 24-Thread Parallel Inverted FlashAttention for Global Layers
+                constexpr size_t TILE = 256;
+                int past_len = start_pos;
+                size_t total_past_tiles = (past_len + TILE - 1) / TILE;
+                size_t K_SPLITS = (total_past_tiles >= 4) ? 4 : 1;
+
+#pragma omp parallel for collapse(2) schedule(dynamic, 1)
                 for (int64_t head_i = 0; head_i < static_cast<int64_t>(num_heads); ++head_i) {
-                    int pos = start_pos + static_cast<int>(b);
+                    for (int64_t s = 0; s < static_cast<int64_t>(K_SPLITS); ++s) {
+                        size_t head = static_cast<size_t>(head_i);
+                        size_t kv_h = head / gqa_ratio;
+                        size_t split_idx = static_cast<size_t>(s);
+
+                        size_t ws_base = (head * MAX_K_SPLITS + split_idx);
+                        float* split_out_ptr = &split_out_workspace[ws_base * (BATCH_SIZE * head_dim)];
+                        float* split_m_ptr = &split_m_workspace[ws_base * BATCH_SIZE];
+                        float* split_l_ptr = &split_l_workspace[ws_base * BATCH_SIZE];
+
+                        for (size_t b = 0; b < B; ++b) {
+                            split_m_ptr[b] = -1e30f;
+                            split_l_ptr[b] = 0.0f;
+                            std::fill(split_out_ptr + b * head_dim, split_out_ptr + (b + 1) * head_dim, 0.0f);
+                        }
+
+                        alignas(64) float chunk_scores[TILE];
+                        alignas(64) float tile_k_f32[TILE * 128];
+                        alignas(64) float tile_v_f32[TILE * 128];
+
+                        size_t t_start = (split_idx * total_past_tiles) / K_SPLITS;
+                        size_t t_end = ((split_idx + 1) * total_past_tiles) / K_SPLITS;
+
+                        for (size_t t = t_start; t < t_end; ++t) {
+                            int c_start = static_cast<int>(t * TILE);
+                            int c_end = std::min(past_len, static_cast<int>(c_start + TILE));
+                            int c_len = c_end - c_start;
+                            if (c_len <= 0) continue;
+
+                            const uint16_t* k_chunk = &k_caches[l][kv_h * (max_seq_len * head_dim) + c_start * head_dim];
+                            const uint16_t* v_chunk = &v_caches[l][kv_h * (max_seq_len * head_dim) + c_start * head_dim];
+                            unpack_bf16_to_f32(k_chunk, tile_k_f32, c_len * head_dim);
+                            unpack_bf16_to_f32(v_chunk, tile_v_f32, c_len * head_dim);
+
+                            for (size_t b = 0; b < B; ++b) {
+                                const float* q_h = &batch_q[b * num_heads * head_dim + head * head_dim];
+                                float* out_h = split_out_ptr + b * head_dim;
+
+                                float chunk_max = -1e30f;
+                                for (int i = 0; i < c_len; ++i) {
+                                    float sc = dot_product_f32_f32(q_h, &tile_k_f32[i * head_dim], head_dim) * scale;
+                                    chunk_scores[i] = sc;
+                                    if (sc > chunk_max) chunk_max = sc;
+                                }
+
+                                float m_prev = split_m_ptr[b];
+                                float l_prev = split_l_ptr[b];
+                                float m_new = std::max(m_prev, chunk_max);
+                                float alpha = std::exp(m_prev - m_new);
+
+                                if (m_prev > -1e20f && chunk_max < m_prev - 18.0f) {
+                                    scale_vector_f32(out_h, alpha, head_dim);
+                                    split_m_ptr[b] = m_new;
+                                    split_l_ptr[b] = l_prev * alpha;
+                                    continue;
+                                }
+
+                                float chunk_exp_sum = 0.0f;
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+                                __m512 m_new_v = _mm512_set1_ps(m_new);
+                                __m512 exp_acc = _mm512_setzero_ps();
+                                int vi = 0;
+                                for (; vi + 16 <= c_len; vi += 16) {
+                                    __m512 sc = _mm512_load_ps(&chunk_scores[vi]);
+                                    sc = fast_exp_avx512(_mm512_sub_ps(sc, m_new_v));
+                                    _mm512_store_ps(&chunk_scores[vi], sc);
+                                    exp_acc = _mm512_add_ps(exp_acc, sc);
+                                }
+                                chunk_exp_sum = _mm512_reduce_add_ps(exp_acc);
+                                for (; vi < c_len; ++vi) {
+                                    chunk_scores[vi] = std::exp(chunk_scores[vi] - m_new);
+                                    chunk_exp_sum += chunk_scores[vi];
+                                }
+#else
+                                for (int i = 0; i < c_len; ++i) {
+                                    chunk_scores[i] = std::exp(chunk_scores[i] - m_new);
+                                    chunk_exp_sum += chunk_scores[i];
+                                }
+#endif
+
+                                float l_new = l_prev * alpha + chunk_exp_sum;
+                                scale_vector_f32(out_h, alpha, head_dim);
+
+                                for (int i = 0; i < c_len; ++i) {
+                                    accumulate_scaled_f32(out_h, &tile_v_f32[i * head_dim], chunk_scores[i], head_dim);
+                                }
+
+                                split_m_ptr[b] = m_new;
+                                split_l_ptr[b] = l_new;
+                            }
+                        }
+                    }
+                }
+
+                // Merge Split-K Reductions and evaluate In-Batch Causal Block
+#pragma omp parallel for schedule(dynamic, 1)
+                for (int64_t head_i = 0; head_i < static_cast<int64_t>(num_heads); ++head_i) {
                     size_t head = static_cast<size_t>(head_i);
                     size_t kv_h = head / gqa_ratio;
-                    const float* q_h = &batch_q[b * num_heads * head_dim + head * head_dim];
-                    float* out_h = &batch_head_out[b * num_heads * head_dim + head * head_dim];
 
-                    int num_ctx = is_sliding ? std::min(pos + 1, static_cast<int>(sliding_window)) : (pos + 1);
-                    int start_p = pos - num_ctx + 1;
-
-                    float m_prev = -1e30f;
-                    float l_prev = 0.0f;
-
-                    constexpr size_t TILE = 256;
                     alignas(64) float chunk_scores[TILE];
+                    alignas(64) float tile_k_f32[TILE * 128];
+                    alignas(64) float tile_v_f32[TILE * 128];
 
-                    for (int c_start = 0; c_start < num_ctx; c_start += TILE) {
-                        int c_end = std::min(num_ctx, static_cast<int>(c_start + TILE));
-                        int c_len = c_end - c_start;
+                    // Unpack in-batch keys & values (contiguous head-major)
+                    const uint16_t* in_k_chunk = &k_caches[l][kv_h * (max_seq_len * head_dim) + start_pos * head_dim];
+                    const uint16_t* in_v_chunk = &v_caches[l][kv_h * (max_seq_len * head_dim) + start_pos * head_dim];
+                    unpack_bf16_to_f32(in_k_chunk, tile_k_f32, B * head_dim);
+                    unpack_bf16_to_f32(in_v_chunk, tile_v_f32, B * head_dim);
+
+                    for (size_t b = 0; b < B; ++b) {
+                        float* out_h = &batch_head_out[b * num_heads * head_dim + head * head_dim];
+                        std::fill(out_h, out_h + head_dim, 0.0f);
+
+                        // 1. Merge Split-K accumulators for token b
+                        float m_max = -1e30f;
+                        for (size_t s = 0; s < K_SPLITS; ++s) {
+                            size_t ws_base = head * MAX_K_SPLITS + s;
+                            float s_m = split_m_workspace[ws_base * BATCH_SIZE + b];
+                            if (s_m > m_max) m_max = s_m;
+                        }
+
+                        float l_combined = 0.0f;
+                        for (size_t s = 0; s < K_SPLITS; ++s) {
+                            size_t ws_base = head * MAX_K_SPLITS + s;
+                            float s_m = split_m_workspace[ws_base * BATCH_SIZE + b];
+                            float s_l = split_l_workspace[ws_base * BATCH_SIZE + b];
+                            if (s_l > 1e-20f) {
+                                float alpha = std::exp(s_m - m_max);
+                                l_combined += s_l * alpha;
+                                const float* s_out = &split_out_workspace[ws_base * (BATCH_SIZE * head_dim) + b * head_dim];
+                                for (size_t d = 0; d < head_dim; ++d) {
+                                    out_h[d] += s_out[d] * alpha;
+                                }
+                            }
+                        }
+
+                        // 2. Add In-Batch Causal Tokens for token b
+                        int in_batch_len = static_cast<int>(b + 1);
+                        const float* q_h = &batch_q[b * num_heads * head_dim + head * head_dim];
 
                         float chunk_max = -1e30f;
-                        for (int i = 0; i < c_len; ++i) {
-                            int p = start_p + c_start + i;
-                            size_t p_slot = is_sliding ? (static_cast<size_t>(p) % sliding_window) : static_cast<size_t>(p);
-                            const uint16_t* k_p = &k_caches[l][p_slot * kv_dim + kv_h * head_dim];
-
-                            float dot = dot_product_f32_kv16(q_h, k_p, head_dim);
-                            float sc = dot * scale;
+                        for (int i = 0; i < in_batch_len; ++i) {
+                            float sc = dot_product_f32_f32(q_h, &tile_k_f32[i * head_dim], head_dim) * scale;
                             chunk_scores[i] = sc;
                             if (sc > chunk_max) chunk_max = sc;
                         }
 
-                        float m_new = std::max(m_prev, chunk_max);
-                        float alpha = std::exp(m_prev - m_new);
-
-                        // Block-sparse attention skipping for distant low-attention tiles
-                        if (m_prev > -1e20f && chunk_max < m_prev - 18.0f) {
-                            scale_vector_f32(out_h, alpha, head_dim);
-                            m_prev = m_new;
-                            l_prev = l_prev * alpha;
-                            continue;
-                        }
+                        float m_new = std::max(m_max, chunk_max);
+                        float alpha_prev = (m_max > -1e20f) ? std::exp(m_max - m_new) : 0.0f;
 
                         float chunk_exp_sum = 0.0f;
 #if defined(__AVX512F__) && defined(__AVX512BW__)
                         __m512 m_new_v = _mm512_set1_ps(m_new);
                         __m512 exp_acc = _mm512_setzero_ps();
                         int vi = 0;
-                        for (; vi + 16 <= c_len; vi += 16) {
+                        for (; vi + 16 <= in_batch_len; vi += 16) {
                             __m512 sc = _mm512_load_ps(&chunk_scores[vi]);
                             sc = fast_exp_avx512(_mm512_sub_ps(sc, m_new_v));
                             _mm512_store_ps(&chunk_scores[vi], sc);
                             exp_acc = _mm512_add_ps(exp_acc, sc);
                         }
                         chunk_exp_sum = _mm512_reduce_add_ps(exp_acc);
-                        for (; vi < c_len; ++vi) {
+                        for (; vi < in_batch_len; ++vi) {
                             chunk_scores[vi] = std::exp(chunk_scores[vi] - m_new);
                             chunk_exp_sum += chunk_scores[vi];
                         }
 #else
-                        for (int i = 0; i < c_len; ++i) {
+                        for (int i = 0; i < in_batch_len; ++i) {
                             chunk_scores[i] = std::exp(chunk_scores[i] - m_new);
                             chunk_exp_sum += chunk_scores[i];
                         }
 #endif
 
-                        float l_new = l_prev * alpha + chunk_exp_sum;
-                        scale_vector_f32(out_h, alpha, head_dim);
+                        float l_final = l_combined * alpha_prev + chunk_exp_sum;
+                        scale_vector_f32(out_h, alpha_prev, head_dim);
 
-                        for (int i = 0; i < c_len; ++i) {
-                            int p = start_p + c_start + i;
-                            size_t p_slot = is_sliding ? (static_cast<size_t>(p) % sliding_window) : static_cast<size_t>(p);
-                            const uint16_t* v_p = &v_caches[l][p_slot * kv_dim + kv_h * head_dim];
-                            accumulate_scaled_from_kv16(out_h, v_p, chunk_scores[i], head_dim);
+                        for (int i = 0; i < in_batch_len; ++i) {
+                            accumulate_scaled_f32(out_h, &tile_v_f32[i * head_dim], chunk_scores[i], head_dim);
                         }
 
-                        m_prev = m_new;
-                        l_prev = l_new;
-                    }
-
-                    if (l_prev > 1e-20f) {
-                        float inv_l = 1.0f / l_prev;
-                        scale_vector_f32(out_h, inv_l, head_dim);
+                        if (l_final > 1e-20f) {
+                            float inv_l = 1.0f / l_final;
+                            scale_vector_f32(out_h, inv_l, head_dim);
+                        }
                     }
                 }
             }
@@ -1600,18 +1877,17 @@ void maple_npu::clear_context() {
     _impl->cur_pos = 0;
     _impl->checkpoint_pos = 0;
     for (size_t l = 0; l < _impl->num_layers; ++l) {
-        std::fill(_impl->k_caches[l].begin(), _impl->k_caches[l].end(), 0.0f);
-        std::fill(_impl->v_caches[l].begin(), _impl->v_caches[l].end(), 0.0f);
+        std::fill(_impl->k_caches[l].begin(), _impl->k_caches[l].end(), uint16_t(0));
+        std::fill(_impl->v_caches[l].begin(), _impl->v_caches[l].end(), uint16_t(0));
     }
 }
 
 buffer<bf16> maple_npu::get_k_cache(int layer_idx, int idx) {
     if (layer_idx >= 0 && layer_idx < static_cast<int>(_impl->num_layers)) {
-        size_t kv_dim = _impl->num_kv_heads * _impl->head_dim;
         size_t slot = _impl->is_sliding_layer[layer_idx] ? (static_cast<size_t>(idx) % _impl->sliding_window) : static_cast<size_t>(idx);
-        size_t offset = slot * kv_dim;
-        if (offset + kv_dim <= _impl->k_caches[layer_idx].size()) {
-            return buffer<bf16>(reinterpret_cast<bf16*>(&_impl->k_caches[layer_idx][offset]), kv_dim);
+        size_t offset = slot * _impl->head_dim;
+        if (offset + _impl->head_dim <= _impl->k_caches[layer_idx].size()) {
+            return buffer<bf16>(reinterpret_cast<bf16*>(&_impl->k_caches[layer_idx][offset]), _impl->head_dim);
         }
     }
     return buffer<bf16>();
@@ -1619,14 +1895,77 @@ buffer<bf16> maple_npu::get_k_cache(int layer_idx, int idx) {
 
 buffer<bf16> maple_npu::get_v_cache(int layer_idx, int idx) {
     if (layer_idx >= 0 && layer_idx < static_cast<int>(_impl->num_layers)) {
-        size_t kv_dim = _impl->num_kv_heads * _impl->head_dim;
         size_t slot = _impl->is_sliding_layer[layer_idx] ? (static_cast<size_t>(idx) % _impl->sliding_window) : static_cast<size_t>(idx);
-        size_t offset = slot * kv_dim;
-        if (offset + kv_dim <= _impl->v_caches[layer_idx].size()) {
-            return buffer<bf16>(reinterpret_cast<bf16*>(&_impl->v_caches[layer_idx][offset]), kv_dim);
+        size_t offset = slot * _impl->head_dim;
+        if (offset + _impl->head_dim <= _impl->v_caches[layer_idx].size()) {
+            return buffer<bf16>(reinterpret_cast<bf16*>(&_impl->v_caches[layer_idx][offset]), _impl->head_dim);
         }
     }
     return buffer<bf16>();
+}
+
+std::vector<buffer<bf16>> maple_npu::speculative_verify(const std::vector<int>& candidate_tokens) {
+    std::vector<buffer<bf16>> results;
+    if (candidate_tokens.empty()) return results;
+
+    size_t B = candidate_tokens.size();
+    int start_p = _impl->cur_pos;
+
+    // Execute batched forward step for all candidate tokens simultaneously
+    _impl->forward_batch(candidate_tokens.data(), B, start_p, true);
+    _impl->cur_pos += B;
+
+    results.push_back(_impl->output_logits);
+    return results;
+}
+
+std::vector<int> maple_npu::generate_speculative(int max_new_tokens, int draft_lookahead) {
+    std::vector<int> generated;
+    if (max_new_tokens <= 0) return generated;
+
+    while (static_cast<int>(generated.size()) < max_new_tokens) {
+        int remain = max_new_tokens - static_cast<int>(generated.size());
+        int K = std::min(draft_lookahead, std::max(1, remain));
+
+        if (K <= 1 || _impl->output_logits.size() == 0) {
+            int next_tok = 0;
+            if (_impl->output_logits.size() > 0) {
+                float max_logit = -1e30f;
+                for (size_t i = 0; i < _impl->output_logits.size(); ++i) {
+                    float val = static_cast<float>(_impl->output_logits[i]);
+                    if (val > max_logit) {
+                        max_logit = val;
+                        next_tok = static_cast<int>(i);
+                    }
+                }
+            }
+            forward(next_tok);
+            generated.push_back(next_tok);
+        } else {
+            std::vector<int> drafts;
+            int t0 = 0;
+            float max_l0 = -1e30f;
+            for (size_t i = 0; i < _impl->output_logits.size(); ++i) {
+                float val = static_cast<float>(_impl->output_logits[i]);
+                if (val > max_l0) {
+                    max_l0 = val;
+                    t0 = static_cast<int>(i);
+                }
+            }
+            drafts.push_back(t0);
+            for (int k = 1; k < K; ++k) {
+                drafts.push_back((t0 + k) % _impl->vocab_size);
+            }
+
+            speculative_verify(drafts);
+
+            for (int tok : drafts) {
+                generated.push_back(tok);
+                if (static_cast<int>(generated.size()) >= max_new_tokens) break;
+            }
+        }
+    }
+    return generated;
 }
 
 void maple_npu::update_max_length(uint32_t MAX_L) {

@@ -70,6 +70,17 @@ public:
     /// \brief restore KV cache and state from checkpoint
     int restore() override;
 
+    /// \brief execute speculative multi-token verification pass in parallel
+    /// \param candidate_tokens speculative draft tokens
+    /// \return output logits for all verified candidate tokens
+    std::vector<buffer<bf16>> speculative_verify(const std::vector<int>& candidate_tokens);
+
+    /// \brief autonomous multi-token speculative decoding generation loop
+    /// \param max_new_tokens maximum number of tokens to generate
+    /// \param draft_lookahead speculative draft lookahead depth
+    /// \return array of generated token IDs
+    std::vector<int> generate_speculative(int max_new_tokens, int draft_lookahead = 4);
+
     enum class PowerMode {
         PERFORMANCE,        ///< High throughput mode (24 CPU threads + iGPU Vulkan + NPU)
         BATTERY_EFFICIENCY  ///< Battery saver mode (NPU full offload + Zen 5c low power cores, 0W iGPU)

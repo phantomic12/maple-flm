@@ -234,7 +234,40 @@ def convert_sharded_checkpoint(src_dir: Path, out_dir: Path):
     # Config & Tokenizers
     convert_model_directory(src_dir, out_dir)
 
-def generate_synthetic_model(out_dir: Path, num_layers: int = 2, num_experts: int = 8, vocab_size: int = 1000):
+def download_hf_checkpoint(repo_id: str, cache_dir: Path) -> Path:
+    """Download checkpoint files from Hugging Face Hub."""
+    print(f"Downloading {repo_id} from Hugging Face Hub...")
+    try:
+        from huggingface_hub import snapshot_download
+        local_dir = snapshot_download(repo_id=repo_id, local_dir=cache_dir, allow_patterns=["*.json", "*.safetensors", "*.jinja", "*.txt"])
+        return Path(local_dir)
+    except ImportError:
+        print("[WARN] huggingface_hub not installed. Using direct download fallback or local path.", file=sys.stderr)
+        return cache_dir
+
+def pack_ternary_2bit(bf16_bytes: bytes) -> bytes:
+    """
+    Packs BF16 ternary weights into 2-bit integers (4 weights per byte).
+    00: 0.0, 01: +1.0, 10: -1.0, 11: reserved
+    """
+    num_elements = len(bf16_bytes) // 2
+    raw_shorts = struct.unpack(f'<{num_elements}H', bf16_bytes)
+    out_bytes = bytearray((num_elements + 3) // 4)
+    
+    for i, s in enumerate(raw_shorts):
+        # 0x3F80 is +1.0, 0xBF80 is -1.0, 0x0000 is 0.0
+        val = 0
+        if s == 0x3F80:
+            val = 1
+        elif s == 0xBF80:
+            val = 2
+        byte_idx = i // 4
+        bit_shift = (i % 4) * 2
+        out_bytes[byte_idx] |= (val << bit_shift)
+        
+    return bytes(out_bytes)
+
+def generate_synthetic_model(out_dir: Path, num_layers: int = 2, num_experts: int = 8, vocab_size: int = 1000, ternary_2bit: bool = False):
     """
     Generates a miniature synthetic Maple model for testing and offline validation.
     """
@@ -264,7 +297,8 @@ def generate_synthetic_model(out_dir: Path, num_layers: int = 2, num_experts: in
         "model_type": "maple",
         "family": "maple",
         "flm_version": "1.0.0",
-        "default_context_length": 512
+        "default_context_length": 512,
+        "quantization": "2bit-ternary" if ternary_2bit else "bf16"
     }
     
     with open(out_dir / "config.json", "w") as f:
@@ -294,12 +328,22 @@ def generate_synthetic_model(out_dir: Path, num_layers: int = 2, num_experts: in
 
         for e in range(num_experts):
             ep = f"{lp}.mlp.experts.{e}"
-            tensors[f"{ep}.gate_proj"] = {"dtype": "BF16", "shape": [moe_inter, hidden_size], "data": make_bf16(moe_inter * hidden_size)}
-            tensors[f"{ep}.up_proj"] = {"dtype": "BF16", "shape": [moe_inter, hidden_size], "data": make_bf16(moe_inter * hidden_size)}
-            tensors[f"{ep}.down_proj"] = {"dtype": "BF16", "shape": [hidden_size, moe_inter], "data": make_bf16(hidden_size * moe_inter)}
+            raw_gate = make_bf16(moe_inter * hidden_size, 0x3F80 if (e % 2 == 0) else 0xBF80)
+            raw_up = make_bf16(moe_inter * hidden_size, 0x3F80)
+            raw_down = make_bf16(hidden_size * moe_inter, 0x3F80 if (e % 2 == 1) else 0xBF80)
+
+            if ternary_2bit:
+                tensors[f"{ep}.gate_proj"] = {"dtype": "INT2", "shape": [moe_inter, hidden_size], "data": pack_ternary_2bit(raw_gate)}
+                tensors[f"{ep}.up_proj"] = {"dtype": "INT2", "shape": [moe_inter, hidden_size], "data": pack_ternary_2bit(raw_up)}
+                tensors[f"{ep}.down_proj"] = {"dtype": "INT2", "shape": [hidden_size, moe_inter], "data": pack_ternary_2bit(raw_down)}
+            else:
+                tensors[f"{ep}.gate_proj"] = {"dtype": "BF16", "shape": [moe_inter, hidden_size], "data": raw_gate}
+                tensors[f"{ep}.up_proj"] = {"dtype": "BF16", "shape": [moe_inter, hidden_size], "data": raw_up}
+                tensors[f"{ep}.down_proj"] = {"dtype": "BF16", "shape": [hidden_size, moe_inter], "data": raw_down}
 
     write_safetensors(out_dir / "model.q4nx", tensors)
-    print(f"[OK] Generated synthetic model with {len(tensors)} tensors -> {out_dir / 'model.q4nx'}")
+    mode_str = "2-bit packed ternary" if ternary_2bit else "BF16"
+    print(f"[OK] Generated synthetic model ({mode_str}) with {len(tensors)} tensors -> {out_dir / 'model.q4nx'}")
 
 def convert_model_directory(src_dir: Path, out_dir: Path):
     """Converts a local directory of deepgrove/maple-preview metadata to FastFlowLM format."""
@@ -333,9 +377,11 @@ def convert_model_directory(src_dir: Path, out_dir: Path):
             print(f"[OK] Copied {filename} -> {out_dir / filename}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Maple-Preview Checkpoint Converter and Quantizer (Phase 2)")
+    parser = argparse.ArgumentParser(description="Maple-Preview Checkpoint Converter and Quantizer (Phases 2 & 7)")
+    parser.add_argument("--model", type=str, default=None, help="Hugging Face repo ID (e.g. deepgrove/maple-preview)")
     parser.add_argument("--src-dir", type=str, default=None, help="Source directory with HF checkpoint shards")
     parser.add_argument("--out-dir", type=str, required=True, help="Destination directory for FastFlowLM model files")
+    parser.add_argument("--ternary-2bit", action="store_true", help="Enable 2-bit packed ternary weight serialization")
     parser.add_argument("--generate-synthetic", action="store_true", help="Generate lightweight synthetic model for testing")
     parser.add_argument("--generate-manifests", action="store_true", help="Generate model_list and model_info manifest JSONs")
     parser.add_argument("--num-layers", type=int, default=2, help="Number of layers for synthetic model")
@@ -353,7 +399,8 @@ def main():
             out_dir, 
             num_layers=args.num_layers, 
             num_experts=args.num_experts, 
-            vocab_size=1000
+            vocab_size=1000,
+            ternary_2bit=args.ternary_2bit
         )
         if args.generate_manifests:
             list_entry, info_entries = generate_manifest_entries(out_dir)
@@ -361,12 +408,14 @@ def main():
             print(json.dumps(list_entry, indent=2))
         return
 
-    if not args.src_dir:
-        parser.error("--src-dir is required unless --generate-synthetic is specified.")
+    src_dir = None
+    if args.model:
+        src_dir = download_hf_checkpoint(args.model, out_dir / "hf_download")
+    elif args.src_dir:
+        src_dir = Path(args.src_dir)
 
-    src_dir = Path(args.src_dir)
-    if not src_dir.exists():
-        print(f"Error: source directory {src_dir} does not exist", file=sys.stderr)
+    if not src_dir or not src_dir.exists():
+        print(f"Error: valid source directory or --model is required unless --generate-synthetic is specified.", file=sys.stderr)
         sys.exit(1)
 
     convert_sharded_checkpoint(src_dir, out_dir)
