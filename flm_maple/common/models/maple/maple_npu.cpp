@@ -5,6 +5,7 @@
 /// \version 1.3.0
 
 #include "models/maple/maple_npu.hpp"
+#include "gpu/vulkan_engine.hpp"
 #include <cmath>
 #include <vector>
 #include <algorithm>
@@ -74,6 +75,54 @@ inline float dot_product_f32_bf16(const float* a, const bf16* b, size_t n) {
 
 inline float dot_product_ternary_fast(const float* a, const bf16* b, size_t n) {
     return dot_product_f32_bf16(a, b, n);
+}
+
+inline void dual_dot_product_f32_bf16(const float* a, const bf16* b1, const bf16* b2, size_t n, float& sum1, float& sum2) {
+    __m512 acc1_0 = _mm512_setzero_ps();
+    __m512 acc1_1 = _mm512_setzero_ps();
+    __m512 acc2_0 = _mm512_setzero_ps();
+    __m512 acc2_1 = _mm512_setzero_ps();
+    size_t i = 0;
+
+    for (; i + 32 <= n; i += 32) {
+        __m512 a0 = _mm512_loadu_ps(a + i);
+        __m256i b1_raw0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b1 + i));
+        __m512 bf1_0 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b1_raw0), 16));
+        acc1_0 = _mm512_fmadd_ps(a0, bf1_0, acc1_0);
+
+        __m256i b2_raw0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b2 + i));
+        __m512 bf2_0 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b2_raw0), 16));
+        acc2_0 = _mm512_fmadd_ps(a0, bf2_0, acc2_0);
+
+        __m512 a1 = _mm512_loadu_ps(a + i + 16);
+        __m256i b1_raw1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b1 + i + 16));
+        __m512 bf1_1 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b1_raw1), 16));
+        acc1_1 = _mm512_fmadd_ps(a1, bf1_1, acc1_1);
+
+        __m256i b2_raw1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b2 + i + 16));
+        __m512 bf2_1 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b2_raw1), 16));
+        acc2_1 = _mm512_fmadd_ps(a1, bf2_1, acc2_1);
+    }
+
+    for (; i + 16 <= n; i += 16) {
+        __m512 a_val = _mm512_loadu_ps(a + i);
+        __m256i b1_raw = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b1 + i));
+        __m512 bf1 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b1_raw), 16));
+        acc1_0 = _mm512_fmadd_ps(a_val, bf1, acc1_0);
+
+        __m256i b2_raw = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b2 + i));
+        __m512 bf2 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b2_raw), 16));
+        acc2_0 = _mm512_fmadd_ps(a_val, bf2, acc2_0);
+    }
+
+    sum1 = _mm512_reduce_add_ps(_mm512_add_ps(acc1_0, acc1_1));
+    sum2 = _mm512_reduce_add_ps(_mm512_add_ps(acc2_0, acc2_1));
+
+    for (; i < n; ++i) {
+        float a_v = a[i];
+        sum1 += a_v * static_cast<float>(b1[i]);
+        sum2 += a_v * static_cast<float>(b2[i]);
+    }
 }
 
 inline float dot_product_f32_f32(const float* a, const float* b, size_t n) {
@@ -377,6 +426,11 @@ inline float dot_product_ternary_fast(const float* a, const bf16* b, size_t n) {
     return dot_product_f32_bf16(a, b, n);
 }
 
+inline void dual_dot_product_f32_bf16(const float* a, const bf16* b1, const bf16* b2, size_t n, float& sum1, float& sum2) {
+    sum1 = dot_product_f32_bf16(a, b1, n);
+    sum2 = dot_product_f32_bf16(a, b2, n);
+}
+
 inline float dot_product_f32_f32(const float* a, const float* b, size_t n) {
     __m256 acc0 = _mm256_setzero_ps();
     __m256 acc1 = _mm256_setzero_ps();
@@ -551,6 +605,16 @@ inline float dot_product_ternary_fast(const float* a, const bf16* b, size_t n) {
         else if (bv < -0.5f) sum -= a[i];
     }
     return sum;
+}
+
+inline void dual_dot_product_f32_bf16(const float* a, const bf16* b1, const bf16* b2, size_t n, float& sum1, float& sum2) {
+    sum1 = 0.0f;
+    sum2 = 0.0f;
+    for (size_t i = 0; i < n; ++i) {
+        float a_v = a[i];
+        sum1 += a_v * static_cast<float>(b1[i]);
+        sum2 += a_v * static_cast<float>(b2[i]);
+    }
 }
 
 inline float dot_product_f32_bf16(const float* a, const bf16* b, size_t n) {
@@ -753,6 +817,7 @@ struct maple_npu::Impl {
 
     buffer<bf16> output_logits;
     PowerMode power_mode;
+    std::unique_ptr<VulkanComputeEngine> vulkan_engine;
 
     Impl(LM_Config cfg, npu_xclbin_manager* npu_mgr, int MAX_L)
         : config(cfg), npu(npu_mgr), max_seq_len(static_cast<uint32_t>(MAX_L)), cur_pos(0), checkpoint_pos(0), power_mode(PowerMode::PERFORMANCE) {
@@ -764,6 +829,15 @@ struct maple_npu::Impl {
 #if defined(_OPENMP)
             omp_set_num_threads(4);
 #endif
+        } else {
+            try {
+                vulkan_engine = std::make_unique<VulkanComputeEngine>();
+                if (!vulkan_engine->initialize()) {
+                    vulkan_engine = nullptr;
+                }
+            } catch (...) {
+                vulkan_engine = nullptr;
+            }
         }
 
         vocab_size = config.get<u32>("vocab_size", 151936);
@@ -982,6 +1056,14 @@ struct maple_npu::Impl {
                     float m_new = std::max(m_prev, chunk_max);
                     float alpha = std::exp(m_prev - m_new);
 
+                    // Block-sparse attention skipping for distant low-attention tiles
+                    if (m_prev > -1e20f && chunk_max < m_prev - 18.0f) {
+                        scale_vector_f32(out_h, alpha, head_dim);
+                        m_prev = m_new;
+                        l_prev = l_prev * alpha;
+                        continue;
+                    }
+
                     float chunk_exp_sum = 0.0f;
 #if defined(__AVX512F__) && defined(__AVX512BW__)
                     __m512 m_new_v = _mm512_set1_ps(m_new);
@@ -1066,7 +1148,7 @@ struct maple_npu::Impl {
             }
             float inv_topk_sum = 1.0f / (topk_sum + 1e-20f);
 
-            // Grouped MoE Dispatch with Parallel Active Expert Execution
+            // Grouped MoE Dispatch with Dual Gate+Up Projections
 #pragma omp parallel for schedule(static)
             for (int64_t idx = 0; idx < static_cast<int64_t>(num_experts_per_tok * moe_intermediate_size); ++idx) {
                 size_t k_i = static_cast<size_t>(idx / moe_intermediate_size);
@@ -1074,8 +1156,12 @@ struct maple_npu::Impl {
                 size_t e   = ws_expert_indices[k_i];
                 const auto& exp = layer.experts[e];
 
-                float gate_act = dot_product_ternary_fast(ws_norm_h.data(), exp.gate_proj.begin() + m * hidden_size, hidden_size);
-                float up_act   = dot_product_ternary_fast(ws_norm_h.data(), exp.up_proj.begin() + m * hidden_size, hidden_size);
+                float gate_act = 0.0f;
+                float up_act   = 0.0f;
+                dual_dot_product_f32_bf16(ws_norm_h.data(),
+                    exp.gate_proj.begin() + m * hidden_size,
+                    exp.up_proj.begin() + m * hidden_size,
+                    hidden_size, gate_act, up_act);
 
                 float g = std::min(7.0f, gate_act);
                 float u = clamp_val(up_act, -7.0f, 7.0f);
@@ -1083,15 +1169,21 @@ struct maple_npu::Impl {
                 ws_expert_intermediates[k_i][m] = (g * sig) * u;
             }
 
-            // In-place Fused Down Projection & Weighted Accumulation
+            // Pre-scale intermediate activations with router weights
+            for (size_t k_i = 0; k_i < num_experts_per_tok; ++k_i) {
+                size_t e = ws_expert_indices[k_i];
+                float weight = ws_router_probs[e] * inv_topk_sum;
+                scale_vector_f32(ws_expert_intermediates[k_i].data(), weight, moe_intermediate_size);
+            }
+
+            // In-place Fused Down Projection & Parallel Accumulation
 #pragma omp parallel for schedule(static)
             for (int64_t hid = 0; hid < static_cast<int64_t>(hidden_size); ++hid) {
                 float sum = 0.0f;
                 for (size_t k_i = 0; k_i < num_experts_per_tok; ++k_i) {
                     size_t e = ws_expert_indices[k_i];
-                    float weight = ws_router_probs[e] * inv_topk_sum;
                     const bf16* down_row = layer.experts[e].down_proj.begin() + hid * moe_intermediate_size;
-                    sum += weight * dot_product_ternary_fast(ws_expert_intermediates[k_i].data(), down_row, moe_intermediate_size);
+                    sum += dot_product_ternary_fast(ws_expert_intermediates[k_i].data(), down_row, moe_intermediate_size);
                 }
                 ws_moe_out[hid] = sum;
             }
@@ -1231,6 +1323,14 @@ struct maple_npu::Impl {
                         float m_new = std::max(m_prev, chunk_max);
                         float alpha = std::exp(m_prev - m_new);
 
+                        // Block-sparse attention skipping for distant low-attention tiles
+                        if (m_prev > -1e20f && chunk_max < m_prev - 18.0f) {
+                            scale_vector_f32(out_h, alpha, head_dim);
+                            m_prev = m_new;
+                            l_prev = l_prev * alpha;
+                            continue;
+                        }
+
                         float chunk_exp_sum = 0.0f;
 #if defined(__AVX512F__) && defined(__AVX512BW__)
                         __m512 m_new_v = _mm512_set1_ps(m_new);
@@ -1348,8 +1448,13 @@ struct maple_npu::Impl {
                     size_t e = batch_topk_exp[b][k_i];
                     const auto& exp = layer.experts[e];
                     for (size_t m = 0; m < moe_intermediate_size; ++m) {
-                        float gate_act = dot_product_ternary_fast(norm_h_b, exp.gate_proj.begin() + m * hidden_size, hidden_size);
-                        float up_act   = dot_product_ternary_fast(norm_h_b, exp.up_proj.begin() + m * hidden_size, hidden_size);
+                        float gate_act = 0.0f;
+                        float up_act   = 0.0f;
+                        dual_dot_product_f32_bf16(norm_h_b,
+                            exp.gate_proj.begin() + m * hidden_size,
+                            exp.up_proj.begin() + m * hidden_size,
+                            hidden_size, gate_act, up_act);
+
                         float g = std::min(7.0f, gate_act);
                         float u = clamp_val(up_act, -7.0f, 7.0f);
                         float sig = 1.0f / (1.0f + std::exp(-g));
@@ -1357,13 +1462,18 @@ struct maple_npu::Impl {
                     }
                 }
 
+                // Pre-scale intermediate activations with router weights
+                for (size_t k_i = 0; k_i < num_experts_per_tok; ++k_i) {
+                    float weight = batch_topk_weights[b][k_i];
+                    scale_vector_f32(exp_inter[k_i], weight, moe_intermediate_size);
+                }
+
                 for (size_t hid = 0; hid < hidden_size; ++hid) {
                     float sum = 0.0f;
                     for (size_t k_i = 0; k_i < num_experts_per_tok; ++k_i) {
                         size_t e = batch_topk_exp[b][k_i];
-                        float weight = batch_topk_weights[b][k_i];
                         const bf16* down_row = layer.experts[e].down_proj.begin() + hid * moe_intermediate_size;
-                        sum += weight * dot_product_ternary_fast(exp_inter[k_i], down_row, moe_intermediate_size);
+                        sum += dot_product_ternary_fast(exp_inter[k_i], down_row, moe_intermediate_size);
                     }
                     moe_out_b[hid] = sum;
                 }
@@ -1543,8 +1653,19 @@ void maple_npu::set_power_mode(PowerMode mode) {
 #if defined(_OPENMP)
     if (mode == PowerMode::BATTERY_EFFICIENCY) {
         omp_set_num_threads(4);
+        _impl->vulkan_engine = nullptr;
     } else {
         omp_set_num_threads(24);
+        if (!_impl->vulkan_engine) {
+            try {
+                _impl->vulkan_engine = std::make_unique<VulkanComputeEngine>();
+                if (!_impl->vulkan_engine->initialize()) {
+                    _impl->vulkan_engine = nullptr;
+                }
+            } catch (...) {
+                _impl->vulkan_engine = nullptr;
+            }
+        }
     }
 #endif
 }
