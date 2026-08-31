@@ -120,12 +120,14 @@ graph TD
 
 ---
 
-## 6. Memory Footprint at 128K Context
+## 6. Memory Footprint at 100K & 128K Context (Packed BF16 Layout)
 
-| Component | Dimensions | Memory Footprint |
+| Component | Dimensions | Memory Footprint (BF16) |
 |---|---|---|
-| **Model Weights (Q4NX / TQ2_0)** | 20B parameters (256 experts $\times$ 24 layers) | **~5.5 GB** |
-| **Sliding Layers KV Cache (18 layers)** | $18 \times 512 \text{ slots} \times 512 \text{ dim} \times 4 \text{ bytes}$ | **18.9 MB** (constant $O(1)$) |
-| **Global Layers KV Cache (6 layers)** | $6 \times 131,072 \text{ slots} \times 512 \text{ dim} \times 4 \text{ bytes}$ | **1.61 GB** |
-| **Total Runtime RAM at 128K** | Model + KV Caches + Active Buffers | **~7.13 GB** |
+| **Model Weights (Q4NX / 2-bit Ternary)** | 20B parameters (256 experts $\times$ 24 layers) | **~5.31 GB** |
+| **Sliding Layers KV Cache (18 layers)** | $18 \times 512 \text{ slots} \times 4 \text{ KV heads} \times 128 \text{ dim} \times 2 \text{ bytes} \times 2$ | **9.4 MB** (constant $O(1)$) |
+| **Global Layers KV Cache (6 layers @ 100K)** | $6 \times 100,000 \text{ slots} \times 4 \text{ KV heads} \times 128 \text{ dim} \times 2 \text{ bytes} \times 2$ | **585.9 MB** |
+| **Total KV Cache Footprint at 100K** | 18 SWA + 6 Global layers | **594.9 MB** |
+| **Global Layers KV Cache (6 layers @ 128K/131K)** | $6 \times 131,072 \text{ slots} \times 4 \text{ KV heads} \times 128 \text{ dim} \times 2 \text{ bytes} \times 2$ | **768.0 MB** |
+| **Total Runtime RAM at 128K Context** | Model Weights (2-bit/BF16) + 128K KV Caches | **~6.10 GB** |
 
