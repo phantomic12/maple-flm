@@ -163,6 +163,122 @@ inline void scale_vector_f32(float* out, float scale, size_t n) {
     }
 }
 
+// --- BF16 KV Cache Helpers ---
+
+inline void store_f32_as_bf16(const float* src, uint16_t* dst, size_t n) {
+    size_t i = 0;
+    for (; i + 16 <= n; i += 16) {
+        __m512i bits = _mm512_loadu_si512(reinterpret_cast<const __m512i*>(src + i));
+        // Round to nearest even: bits += 0x7FFF + ((bits >> 16) & 1)
+        __m512i lsb = _mm512_and_si512(_mm512_srli_epi32(bits, 16), _mm512_set1_epi32(1));
+        bits = _mm512_add_epi32(bits, _mm512_add_epi32(_mm512_set1_epi32(0x7FFF), lsb));
+        __m512i shifted = _mm512_srli_epi32(bits, 16);
+        // Pack 16x32-bit to 16x16-bit
+        __m256i packed = _mm512_cvtepi32_epi16(shifted);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), packed);
+    }
+    for (; i < n; ++i) {
+        uint32_t u;
+        std::memcpy(&u, &src[i], 4);
+        u += 0x7FFF + ((u >> 16) & 1);
+        dst[i] = static_cast<uint16_t>(u >> 16);
+    }
+}
+
+inline float dot_product_f32_kv16(const float* a, const uint16_t* b, size_t n) {
+    __m512 acc0 = _mm512_setzero_ps();
+    __m512 acc1 = _mm512_setzero_ps();
+    __m512 acc2 = _mm512_setzero_ps();
+    __m512 acc3 = _mm512_setzero_ps();
+    size_t i = 0;
+
+    for (; i + 64 <= n; i += 64) {
+        __m256i b_raw0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i));
+        __m512 bf0 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b_raw0), 16));
+        acc0 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i), bf0, acc0);
+
+        __m256i b_raw1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i + 16));
+        __m512 bf1 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b_raw1), 16));
+        acc1 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i + 16), bf1, acc1);
+
+        __m256i b_raw2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i + 32));
+        __m512 bf2 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b_raw2), 16));
+        acc2 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i + 32), bf2, acc2);
+
+        __m256i b_raw3 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i + 48));
+        __m512 bf3 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b_raw3), 16));
+        acc3 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i + 48), bf3, acc3);
+    }
+
+    for (; i + 16 <= n; i += 16) {
+        __m256i b_raw = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i));
+        __m512 bf = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b_raw), 16));
+        acc0 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i), bf, acc0);
+    }
+
+    __m512 acc = _mm512_add_ps(_mm512_add_ps(acc0, acc1), _mm512_add_ps(acc2, acc3));
+    float sum = _mm512_reduce_add_ps(acc);
+
+    for (; i < n; ++i) {
+        uint32_t bits = static_cast<uint32_t>(b[i]) << 16;
+        float bf;
+        std::memcpy(&bf, &bits, 4);
+        sum += a[i] * bf;
+    }
+    return sum;
+}
+
+inline void accumulate_scaled_from_kv16(float* out, const uint16_t* v, float scale, size_t n) {
+    __m512 s = _mm512_set1_ps(scale);
+    size_t i = 0;
+    for (; i + 32 <= n; i += 32) {
+        __m256i v_raw0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(v + i));
+        __m512 vf0 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(v_raw0), 16));
+        __m512 o0 = _mm512_loadu_ps(out + i);
+        _mm512_storeu_ps(out + i, _mm512_fmadd_ps(s, vf0, o0));
+
+        __m256i v_raw1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(v + i + 16));
+        __m512 vf1 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(v_raw1), 16));
+        __m512 o1 = _mm512_loadu_ps(out + i + 16);
+        _mm512_storeu_ps(out + i + 16, _mm512_fmadd_ps(s, vf1, o1));
+    }
+    for (; i + 16 <= n; i += 16) {
+        __m256i v_raw = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(v + i));
+        __m512 vf = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(v_raw), 16));
+        __m512 o = _mm512_loadu_ps(out + i);
+        _mm512_storeu_ps(out + i, _mm512_fmadd_ps(s, vf, o));
+    }
+    for (; i < n; ++i) {
+        uint32_t bits = static_cast<uint32_t>(v[i]) << 16;
+        float vf;
+        std::memcpy(&vf, &bits, 4);
+        out[i] += scale * vf;
+    }
+}
+
+// --- Vectorized Fast Exp (Cephes-style, ~20-bit accuracy) ---
+
+inline __m512 fast_exp_avx512(__m512 x) {
+    x = _mm512_max_ps(x, _mm512_set1_ps(-88.0f));
+    x = _mm512_min_ps(x, _mm512_set1_ps(88.0f));
+    const __m512 log2e = _mm512_set1_ps(1.44269504088896341f);
+    const __m512 ln2_hi = _mm512_set1_ps(0.693145751953125f);
+    const __m512 ln2_lo = _mm512_set1_ps(1.42860682030941723212e-6f);
+    __m512 t = _mm512_mul_ps(x, log2e);
+    __m512 t_round = _mm512_roundscale_ps(t, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+    __m512 r = _mm512_fnmadd_ps(t_round, ln2_hi, x);
+    r = _mm512_fnmadd_ps(t_round, ln2_lo, r);
+    __m512 r2 = _mm512_mul_ps(r, r);
+    __m512 p = _mm512_fmadd_ps(_mm512_set1_ps(1.0f/120.0f), r, _mm512_set1_ps(1.0f/24.0f));
+    p = _mm512_fmadd_ps(p, r, _mm512_set1_ps(1.0f/6.0f));
+    p = _mm512_fmadd_ps(p, r, _mm512_set1_ps(0.5f));
+    p = _mm512_fmadd_ps(p, r2, r);
+    p = _mm512_add_ps(p, _mm512_set1_ps(1.0f));
+    __m512i n = _mm512_cvttps_epi32(t_round);
+    __m512i exp_bits = _mm512_slli_epi32(_mm512_add_epi32(n, _mm512_set1_epi32(127)), 23);
+    return _mm512_mul_ps(p, _mm512_castsi512_ps(exp_bits));
+}
+
 inline void rms_norm_inplace(float* x, const bf16* weight, size_t size, float eps) {
     __m512 sq_acc0 = _mm512_setzero_ps();
     __m512 sq_acc1 = _mm512_setzero_ps();
@@ -314,6 +430,63 @@ inline void scale_vector_f32(float* out, float scale, size_t n) {
     }
 }
 
+inline void store_f32_as_bf16(const float* src, uint16_t* dst, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        uint32_t u;
+        std::memcpy(&u, &src[i], 4);
+        u += 0x7FFF + ((u >> 16) & 1);
+        dst[i] = static_cast<uint16_t>(u >> 16);
+    }
+}
+
+inline float dot_product_f32_kv16(const float* a, const uint16_t* b, size_t n) {
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    size_t i = 0;
+
+    for (; i + 16 <= n; i += 16) {
+        __m128i b_low = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + i));
+        __m256 bf0 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(b_low), 16));
+        __m256 a0 = _mm256_loadu_ps(a + i);
+        acc0 = _mm256_fmadd_ps(a0, bf0, acc0);
+
+        __m128i b_high = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + i + 8));
+        __m256 bf1 = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(b_high), 16));
+        __m256 a1 = _mm256_loadu_ps(a + i + 8);
+        acc1 = _mm256_fmadd_ps(a1, bf1, acc1);
+    }
+
+    __m256 acc = _mm256_add_ps(acc0, acc1);
+    alignas(32) float tmp[8];
+    _mm256_storeu_ps(tmp, acc);
+    float sum = tmp[0] + tmp[1] + tmp[2] + tmp[3] + tmp[4] + tmp[5] + tmp[6] + tmp[7];
+
+    for (; i < n; ++i) {
+        uint32_t bits = static_cast<uint32_t>(b[i]) << 16;
+        float bf;
+        std::memcpy(&bf, &bits, 4);
+        sum += a[i] * bf;
+    }
+    return sum;
+}
+
+inline void accumulate_scaled_from_kv16(float* out, const uint16_t* v, float scale, size_t n) {
+    __m256 s = _mm256_set1_ps(scale);
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        __m128i v_raw = _mm_loadu_si128(reinterpret_cast<const __m128i*>(v + i));
+        __m256 vf = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(v_raw), 16));
+        __m256 o = _mm256_loadu_ps(out + i);
+        _mm256_storeu_ps(out + i, _mm256_fmadd_ps(s, vf, o));
+    }
+    for (; i < n; ++i) {
+        uint32_t bits = static_cast<uint32_t>(v[i]) << 16;
+        float vf;
+        std::memcpy(&vf, &bits, 4);
+        out[i] += scale * vf;
+    }
+}
+
 inline void rms_norm_inplace(float* x, const bf16* weight, size_t size, float eps) {
     __m256 sq_acc = _mm256_setzero_ps();
     size_t i = 0;
@@ -394,6 +567,35 @@ inline float dot_product_f32_f32(const float* a, const float* b, size_t n) {
         sum += a[i] * b[i];
     }
     return sum;
+}
+
+inline void store_f32_as_bf16(const float* src, uint16_t* dst, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        uint32_t u;
+        std::memcpy(&u, &src[i], 4);
+        u += 0x7FFF + ((u >> 16) & 1);
+        dst[i] = static_cast<uint16_t>(u >> 16);
+    }
+}
+
+inline float dot_product_f32_kv16(const float* a, const uint16_t* b, size_t n) {
+    float sum = 0.0f;
+    for (size_t i = 0; i < n; ++i) {
+        uint32_t bits = static_cast<uint32_t>(b[i]) << 16;
+        float bf;
+        std::memcpy(&bf, &bits, 4);
+        sum += a[i] * bf;
+    }
+    return sum;
+}
+
+inline void accumulate_scaled_from_kv16(float* out, const uint16_t* v, float scale, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        uint32_t bits = static_cast<uint32_t>(v[i]) << 16;
+        float vf;
+        std::memcpy(&vf, &bits, 4);
+        out[i] += scale * vf;
+    }
 }
 
 inline void accumulate_scaled_f32(float* out, const float* v, float scale, size_t n) {
@@ -516,8 +718,8 @@ struct maple_npu::Impl {
     // KV Caches:
     // For sliding layers: circular ring buffer of shape (sliding_window, num_kv_heads * head_dim)
     // For global layers: linear buffer of shape (max_seq_len, num_kv_heads * head_dim)
-    std::vector<std::vector<float>> k_caches;
-    std::vector<std::vector<float>> v_caches;
+    std::vector<std::vector<uint16_t>> k_caches;
+    std::vector<std::vector<uint16_t>> v_caches;
 
     // RoPE precomputed frequencies
     std::vector<float> cos_table;
@@ -657,8 +859,8 @@ struct maple_npu::Impl {
 
         for (size_t l = 0; l < num_layers; ++l) {
             size_t slots = is_sliding_layer[l] ? sliding_window : static_cast<size_t>(max_seq_len);
-            k_caches[l].assign(slots * kv_dim, 0.0f);
-            v_caches[l].assign(slots * kv_dim, 0.0f);
+            k_caches[l].assign(slots * kv_dim, uint16_t(0));
+            v_caches[l].assign(slots * kv_dim, uint16_t(0));
         }
     }
 
@@ -738,8 +940,8 @@ struct maple_npu::Impl {
             // Write K and V to KV Cache
             size_t slot = is_sliding ? (static_cast<size_t>(pos) % sliding_window) : static_cast<size_t>(pos);
             size_t cache_offset = slot * kv_dim;
-            std::memcpy(&k_caches[l][cache_offset], ws_k.data(), kv_dim * sizeof(float));
-            std::memcpy(&v_caches[l][cache_offset], ws_v.data(), kv_dim * sizeof(float));
+            store_f32_as_bf16(ws_k.data(), &k_caches[l][cache_offset], kv_dim);
+            store_f32_as_bf16(ws_v.data(), &v_caches[l][cache_offset], kv_dim);
 
             // Attention Context span
             int num_ctx = is_sliding ? std::min(pos + 1, static_cast<int>(sliding_window)) : (pos + 1);
@@ -759,7 +961,7 @@ struct maple_npu::Impl {
                 float l_prev = 0.0f;
 
                 constexpr size_t TILE = 256;
-                alignas(32) float chunk_scores[TILE];
+                alignas(64) float chunk_scores[TILE];
 
                 for (int c_start = 0; c_start < num_ctx; c_start += TILE) {
                     int c_end = std::min(num_ctx, static_cast<int>(c_start + TILE));
@@ -769,9 +971,9 @@ struct maple_npu::Impl {
                     for (int i = 0; i < c_len; ++i) {
                         int p = start_p + c_start + i;
                         size_t p_slot = is_sliding ? (static_cast<size_t>(p) % sliding_window) : static_cast<size_t>(p);
-                        const float* k_p = &k_caches[l][p_slot * kv_dim + kv_h * head_dim];
+                        const uint16_t* k_p = &k_caches[l][p_slot * kv_dim + kv_h * head_dim];
 
-                        float dot = dot_product_f32_f32(q_h, k_p, head_dim);
+                        float dot = dot_product_f32_kv16(q_h, k_p, head_dim);
                         float sc = dot * scale;
                         chunk_scores[i] = sc;
                         if (sc > chunk_max) chunk_max = sc;
@@ -781,10 +983,27 @@ struct maple_npu::Impl {
                     float alpha = std::exp(m_prev - m_new);
 
                     float chunk_exp_sum = 0.0f;
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+                    __m512 m_new_v = _mm512_set1_ps(m_new);
+                    __m512 exp_acc = _mm512_setzero_ps();
+                    int vi = 0;
+                    for (; vi + 16 <= c_len; vi += 16) {
+                        __m512 sc = _mm512_load_ps(&chunk_scores[vi]);
+                        sc = fast_exp_avx512(_mm512_sub_ps(sc, m_new_v));
+                        _mm512_store_ps(&chunk_scores[vi], sc);
+                        exp_acc = _mm512_add_ps(exp_acc, sc);
+                    }
+                    chunk_exp_sum = _mm512_reduce_add_ps(exp_acc);
+                    for (; vi < c_len; ++vi) {
+                        chunk_scores[vi] = std::exp(chunk_scores[vi] - m_new);
+                        chunk_exp_sum += chunk_scores[vi];
+                    }
+#else
                     for (int i = 0; i < c_len; ++i) {
                         chunk_scores[i] = std::exp(chunk_scores[i] - m_new);
                         chunk_exp_sum += chunk_scores[i];
                     }
+#endif
 
                     float l_new = l_prev * alpha + chunk_exp_sum;
                     scale_vector_f32(out_h, alpha, head_dim);
@@ -792,8 +1011,8 @@ struct maple_npu::Impl {
                     for (int i = 0; i < c_len; ++i) {
                         int p = start_p + c_start + i;
                         size_t p_slot = is_sliding ? (static_cast<size_t>(p) % sliding_window) : static_cast<size_t>(p);
-                        const float* v_p = &v_caches[l][p_slot * kv_dim + kv_h * head_dim];
-                        accumulate_scaled_f32(out_h, v_p, chunk_scores[i], head_dim);
+                        const uint16_t* v_p = &v_caches[l][p_slot * kv_dim + kv_h * head_dim];
+                        accumulate_scaled_from_kv16(out_h, v_p, chunk_scores[i], head_dim);
                     }
 
                     m_prev = m_new;
@@ -944,7 +1163,9 @@ struct maple_npu::Impl {
             gemm_batch_f32_bf16(batch_norm_h.data(), layer.v_proj.begin(), batch_v.data(), B, hidden_size, kv_dim);
 
             // Batch Q-Norm, K-Norm, RoPE & Write to KV Cache
-            for (size_t b = 0; b < B; ++b) {
+#pragma omp parallel for schedule(static)
+            for (int64_t b_idx = 0; b_idx < static_cast<int64_t>(B); ++b_idx) {
+                size_t b = static_cast<size_t>(b_idx);
                 int pos = start_pos + static_cast<int>(b);
                 float* q_b = &batch_q[b * num_heads * head_dim];
                 float* k_b = &batch_k[b * kv_dim];
@@ -968,8 +1189,8 @@ struct maple_npu::Impl {
 
                 size_t slot = is_sliding ? (static_cast<size_t>(pos) % sliding_window) : static_cast<size_t>(pos);
                 size_t cache_offset = slot * kv_dim;
-                std::memcpy(&k_caches[l][cache_offset], k_b, kv_dim * sizeof(float));
-                std::memcpy(&v_caches[l][cache_offset], v_b, kv_dim * sizeof(float));
+                store_f32_as_bf16(k_b, &k_caches[l][cache_offset], kv_dim);
+                store_f32_as_bf16(v_b, &v_caches[l][cache_offset], kv_dim);
             }
 
             // Batched Attention across past context + causal block
@@ -989,7 +1210,7 @@ struct maple_npu::Impl {
                     float l_prev = 0.0f;
 
                     constexpr size_t TILE = 256;
-                    alignas(32) float chunk_scores[TILE];
+                    alignas(64) float chunk_scores[TILE];
 
                     for (int c_start = 0; c_start < num_ctx; c_start += TILE) {
                         int c_end = std::min(num_ctx, static_cast<int>(c_start + TILE));
@@ -999,9 +1220,9 @@ struct maple_npu::Impl {
                         for (int i = 0; i < c_len; ++i) {
                             int p = start_p + c_start + i;
                             size_t p_slot = is_sliding ? (static_cast<size_t>(p) % sliding_window) : static_cast<size_t>(p);
-                            const float* k_p = &k_caches[l][p_slot * kv_dim + kv_h * head_dim];
+                            const uint16_t* k_p = &k_caches[l][p_slot * kv_dim + kv_h * head_dim];
 
-                            float dot = dot_product_f32_f32(q_h, k_p, head_dim);
+                            float dot = dot_product_f32_kv16(q_h, k_p, head_dim);
                             float sc = dot * scale;
                             chunk_scores[i] = sc;
                             if (sc > chunk_max) chunk_max = sc;
@@ -1011,10 +1232,27 @@ struct maple_npu::Impl {
                         float alpha = std::exp(m_prev - m_new);
 
                         float chunk_exp_sum = 0.0f;
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+                        __m512 m_new_v = _mm512_set1_ps(m_new);
+                        __m512 exp_acc = _mm512_setzero_ps();
+                        int vi = 0;
+                        for (; vi + 16 <= c_len; vi += 16) {
+                            __m512 sc = _mm512_load_ps(&chunk_scores[vi]);
+                            sc = fast_exp_avx512(_mm512_sub_ps(sc, m_new_v));
+                            _mm512_store_ps(&chunk_scores[vi], sc);
+                            exp_acc = _mm512_add_ps(exp_acc, sc);
+                        }
+                        chunk_exp_sum = _mm512_reduce_add_ps(exp_acc);
+                        for (; vi < c_len; ++vi) {
+                            chunk_scores[vi] = std::exp(chunk_scores[vi] - m_new);
+                            chunk_exp_sum += chunk_scores[vi];
+                        }
+#else
                         for (int i = 0; i < c_len; ++i) {
                             chunk_scores[i] = std::exp(chunk_scores[i] - m_new);
                             chunk_exp_sum += chunk_scores[i];
                         }
+#endif
 
                         float l_new = l_prev * alpha + chunk_exp_sum;
                         scale_vector_f32(out_h, alpha, head_dim);
@@ -1022,8 +1260,8 @@ struct maple_npu::Impl {
                         for (int i = 0; i < c_len; ++i) {
                             int p = start_p + c_start + i;
                             size_t p_slot = is_sliding ? (static_cast<size_t>(p) % sliding_window) : static_cast<size_t>(p);
-                            const float* v_p = &v_caches[l][p_slot * kv_dim + kv_h * head_dim];
-                            accumulate_scaled_f32(out_h, v_p, chunk_scores[i], head_dim);
+                            const uint16_t* v_p = &v_caches[l][p_slot * kv_dim + kv_h * head_dim];
+                            accumulate_scaled_from_kv16(out_h, v_p, chunk_scores[i], head_dim);
                         }
 
                         m_prev = m_new;
