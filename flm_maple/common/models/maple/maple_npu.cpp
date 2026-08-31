@@ -16,7 +16,7 @@
 #include <omp.h>
 #endif
 
-#if defined(__AVX2__) && defined(__FMA__)
+#if defined(__AVX512F__) || defined(__AVX2__)
 #include <immintrin.h>
 #endif
 
@@ -26,7 +26,209 @@ inline float clamp_val(float x, float min_v, float max_v) {
     return std::max(min_v, std::min(max_v, x));
 }
 
-#if defined(__AVX2__) && defined(__FMA__)
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+inline float dot_product_f32_bf16(const float* a, const bf16* b, size_t n) {
+    __m512 acc0 = _mm512_setzero_ps();
+    __m512 acc1 = _mm512_setzero_ps();
+    __m512 acc2 = _mm512_setzero_ps();
+    __m512 acc3 = _mm512_setzero_ps();
+    size_t i = 0;
+
+    for (; i + 64 <= n; i += 64) {
+        __m256i b_raw0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i));
+        __m512 bf0 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b_raw0), 16));
+        __m512 a0 = _mm512_loadu_ps(a + i);
+        acc0 = _mm512_fmadd_ps(a0, bf0, acc0);
+
+        __m256i b_raw1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i + 16));
+        __m512 bf1 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b_raw1), 16));
+        __m512 a1 = _mm512_loadu_ps(a + i + 16);
+        acc1 = _mm512_fmadd_ps(a1, bf1, acc1);
+
+        __m256i b_raw2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i + 32));
+        __m512 bf2 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b_raw2), 16));
+        __m512 a2 = _mm512_loadu_ps(a + i + 32);
+        acc2 = _mm512_fmadd_ps(a2, bf2, acc2);
+
+        __m256i b_raw3 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i + 48));
+        __m512 bf3 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b_raw3), 16));
+        __m512 a3 = _mm512_loadu_ps(a + i + 48);
+        acc3 = _mm512_fmadd_ps(a3, bf3, acc3);
+    }
+
+    for (; i + 16 <= n; i += 16) {
+        __m256i b_raw = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i));
+        __m512 bf = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(b_raw), 16));
+        __m512 a_val = _mm512_loadu_ps(a + i);
+        acc0 = _mm512_fmadd_ps(a_val, bf, acc0);
+    }
+
+    __m512 acc = _mm512_add_ps(_mm512_add_ps(acc0, acc1), _mm512_add_ps(acc2, acc3));
+    float sum = _mm512_reduce_add_ps(acc);
+
+    for (; i < n; ++i) {
+        sum += a[i] * static_cast<float>(b[i]);
+    }
+    return sum;
+}
+
+inline float dot_product_ternary_fast(const float* a, const bf16* b, size_t n) {
+    return dot_product_f32_bf16(a, b, n);
+}
+
+inline float dot_product_f32_f32(const float* a, const float* b, size_t n) {
+    __m512 acc0 = _mm512_setzero_ps();
+    __m512 acc1 = _mm512_setzero_ps();
+    __m512 acc2 = _mm512_setzero_ps();
+    __m512 acc3 = _mm512_setzero_ps();
+    size_t i = 0;
+
+    for (; i + 64 <= n; i += 64) {
+        __m512 a0 = _mm512_loadu_ps(a + i);
+        __m512 b0 = _mm512_loadu_ps(b + i);
+        acc0 = _mm512_fmadd_ps(a0, b0, acc0);
+
+        __m512 a1 = _mm512_loadu_ps(a + i + 16);
+        __m512 b1 = _mm512_loadu_ps(b + i + 16);
+        acc1 = _mm512_fmadd_ps(a1, b1, acc1);
+
+        __m512 a2 = _mm512_loadu_ps(a + i + 32);
+        __m512 b2 = _mm512_loadu_ps(b + i + 32);
+        acc2 = _mm512_fmadd_ps(a2, b2, acc2);
+
+        __m512 a3 = _mm512_loadu_ps(a + i + 48);
+        __m512 b3 = _mm512_loadu_ps(b + i + 48);
+        acc3 = _mm512_fmadd_ps(a3, b3, acc3);
+    }
+
+    for (; i + 16 <= n; i += 16) {
+        __m512 a_val = _mm512_loadu_ps(a + i);
+        __m512 b_val = _mm512_loadu_ps(b + i);
+        acc0 = _mm512_fmadd_ps(a_val, b_val, acc0);
+    }
+
+    __m512 acc = _mm512_add_ps(_mm512_add_ps(acc0, acc1), _mm512_add_ps(acc2, acc3));
+    float sum = _mm512_reduce_add_ps(acc);
+
+    for (; i < n; ++i) {
+        sum += a[i] * b[i];
+    }
+    return sum;
+}
+
+inline void accumulate_scaled_f32(float* out, const float* v, float scale, size_t n) {
+    __m512 s = _mm512_set1_ps(scale);
+    size_t i = 0;
+    for (; i + 32 <= n; i += 32) {
+        __m512 o0 = _mm512_loadu_ps(out + i);
+        __m512 v0 = _mm512_loadu_ps(v + i);
+        o0 = _mm512_fmadd_ps(s, v0, o0);
+        _mm512_storeu_ps(out + i, o0);
+
+        __m512 o1 = _mm512_loadu_ps(out + i + 16);
+        __m512 v1 = _mm512_loadu_ps(v + i + 16);
+        o1 = _mm512_fmadd_ps(s, v1, o1);
+        _mm512_storeu_ps(out + i + 16, o1);
+    }
+    for (; i + 16 <= n; i += 16) {
+        __m512 o = _mm512_loadu_ps(out + i);
+        __m512 val = _mm512_loadu_ps(v + i);
+        o = _mm512_fmadd_ps(s, val, o);
+        _mm512_storeu_ps(out + i, o);
+    }
+    for (; i < n; ++i) {
+        out[i] += scale * v[i];
+    }
+}
+
+inline void scale_vector_f32(float* out, float scale, size_t n) {
+    __m512 s = _mm512_set1_ps(scale);
+    size_t i = 0;
+    for (; i + 32 <= n; i += 32) {
+        __m512 o0 = _mm512_loadu_ps(out + i);
+        o0 = _mm512_mul_ps(o0, s);
+        _mm512_storeu_ps(out + i, o0);
+
+        __m512 o1 = _mm512_loadu_ps(out + i + 16);
+        o1 = _mm512_mul_ps(o1, s);
+        _mm512_storeu_ps(out + i + 16, o1);
+    }
+    for (; i + 16 <= n; i += 16) {
+        __m512 o = _mm512_loadu_ps(out + i);
+        o = _mm512_mul_ps(o, s);
+        _mm512_storeu_ps(out + i, o);
+    }
+    for (; i < n; ++i) {
+        out[i] *= scale;
+    }
+}
+
+inline void rms_norm_inplace(float* x, const bf16* weight, size_t size, float eps) {
+    __m512 sq_acc0 = _mm512_setzero_ps();
+    __m512 sq_acc1 = _mm512_setzero_ps();
+    size_t i = 0;
+    for (; i + 32 <= size; i += 32) {
+        __m512 v0 = _mm512_loadu_ps(x + i);
+        sq_acc0 = _mm512_fmadd_ps(v0, v0, sq_acc0);
+        __m512 v1 = _mm512_loadu_ps(x + i + 16);
+        sq_acc1 = _mm512_fmadd_ps(v1, v1, sq_acc1);
+    }
+    for (; i + 16 <= size; i += 16) {
+        __m512 v = _mm512_loadu_ps(x + i);
+        sq_acc0 = _mm512_fmadd_ps(v, v, sq_acc0);
+    }
+    float sum_sq = _mm512_reduce_add_ps(_mm512_add_ps(sq_acc0, sq_acc1));
+    for (; i < size; ++i) {
+        sum_sq += x[i] * x[i];
+    }
+    float inv_std = 1.0f / std::sqrt(sum_sq / static_cast<float>(size) + eps);
+    __m512 inv_std_vec = _mm512_set1_ps(inv_std);
+
+    for (i = 0; i + 16 <= size; i += 16) {
+        __m256i w_raw = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(weight + i));
+        __m512 w_f32 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(w_raw), 16));
+        __m512 x_val = _mm512_loadu_ps(x + i);
+        __m512 res = _mm512_mul_ps(_mm512_mul_ps(x_val, inv_std_vec), w_f32);
+        _mm512_storeu_ps(x + i, res);
+    }
+    for (; i < size; ++i) {
+        x[i] = x[i] * inv_std * static_cast<float>(weight[i]);
+    }
+}
+
+inline void rms_norm_out(const float* x, float* out, const bf16* weight, size_t size, float eps) {
+    __m512 sq_acc0 = _mm512_setzero_ps();
+    __m512 sq_acc1 = _mm512_setzero_ps();
+    size_t i = 0;
+    for (; i + 32 <= size; i += 32) {
+        __m512 v0 = _mm512_loadu_ps(x + i);
+        sq_acc0 = _mm512_fmadd_ps(v0, v0, sq_acc0);
+        __m512 v1 = _mm512_loadu_ps(x + i + 16);
+        sq_acc1 = _mm512_fmadd_ps(v1, v1, sq_acc1);
+    }
+    for (; i + 16 <= size; i += 16) {
+        __m512 v = _mm512_loadu_ps(x + i);
+        sq_acc0 = _mm512_fmadd_ps(v, v, sq_acc0);
+    }
+    float sum_sq = _mm512_reduce_add_ps(_mm512_add_ps(sq_acc0, sq_acc1));
+    for (; i < size; ++i) {
+        sum_sq += x[i] * x[i];
+    }
+    float inv_std = 1.0f / std::sqrt(sum_sq / static_cast<float>(size) + eps);
+    __m512 inv_std_vec = _mm512_set1_ps(inv_std);
+
+    for (i = 0; i + 16 <= size; i += 16) {
+        __m256i w_raw = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(weight + i));
+        __m512 w_f32 = _mm512_castsi512_ps(_mm512_slli_epi32(_mm512_cvtepu16_epi32(w_raw), 16));
+        __m512 x_val = _mm512_loadu_ps(x + i);
+        __m512 res = _mm512_mul_ps(_mm512_mul_ps(x_val, inv_std_vec), w_f32);
+        _mm512_storeu_ps(out + i, res);
+    }
+    for (; i < size; ++i) {
+        out[i] = x[i] * inv_std * static_cast<float>(weight[i]);
+    }
+}
+#elif defined(__AVX2__) && defined(__FMA__)
 inline float dot_product_f32_bf16(const float* a, const bf16* b, size_t n) {
     __m256 acc0 = _mm256_setzero_ps();
     __m256 acc1 = _mm256_setzero_ps();
@@ -335,8 +537,8 @@ struct maple_npu::Impl {
     std::vector<size_t> ws_expert_indices;
     std::vector<std::vector<float>> ws_expert_intermediates;
 
-    // Batch GEMM Prefill Workspace (B = 64)
-    static constexpr size_t BATCH_SIZE = 64;
+    // Batch GEMM Prefill Workspace (B = 256)
+    static constexpr size_t BATCH_SIZE = 256;
     std::vector<float> batch_h;
     std::vector<float> batch_norm_h;
     std::vector<float> batch_q;
@@ -857,8 +1059,8 @@ struct maple_npu::Impl {
             gemm_batch_f32_bf16(batch_norm_h.data(), layer.gate.begin(), batch_router_logits.data(), B, hidden_size, num_experts);
 
             // 1. Compute Top-K routing and gating weights for all tokens in parallel
-            alignas(32) size_t batch_topk_exp[64][8];
-            alignas(32) float batch_topk_weights[64][8];
+            alignas(32) size_t batch_topk_exp[BATCH_SIZE][8];
+            alignas(32) float batch_topk_weights[BATCH_SIZE][8];
 
 #pragma omp parallel for schedule(static)
             for (int64_t b = 0; b < static_cast<int64_t>(B); ++b) {
