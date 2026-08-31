@@ -26,4 +26,35 @@ cp -v "${ROOT_DIR}/flm_maple/common/models/maple/maple_npu.cpp" src/common/model
 cp -v "${ROOT_DIR}/flm_maple/test/"*.cpp src/test/
 cp -v "${ROOT_DIR}/convert_maple.py" .
 
+echo "Injecting Maple manifests into model_list.json and model_info.json..."
+python3 - << 'EOF'
+import json
+from pathlib import Path
+
+# 1. Update model_list.json
+model_list_path = Path("src/model_list.json")
+if model_list_path.exists():
+    with open(model_list_path, "r") as f:
+        ml = json.load(f)
+    with open("../flm_maple/manifests/model_list_entry.json", "r") as f:
+        mle = json.load(f)
+    for k, v in mle.items():
+        ml.setdefault("models", {})[k] = v
+    with open(model_list_path, "w") as f:
+        json.dump(ml, f, indent=4)
+
+# 2. Update model_info.json
+model_info_path = Path("src/model_info.json")
+if model_info_path.exists():
+    with open(model_info_path, "r") as f:
+        mi = json.load(f)
+    with open("../flm_maple/manifests/model_info_entry.json", "r") as f:
+        mie = json.load(f)
+    for k, v in mie.items():
+        mi[k] = v
+    with open(model_info_path, "w") as f:
+        json.dump(mi, f, indent=4)
+print("[OK] Manifests merged successfully.")
+EOF
+
 echo "[OK] FastFlowLM setup and Maple files copied."
