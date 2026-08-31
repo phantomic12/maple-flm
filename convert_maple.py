@@ -376,11 +376,29 @@ def convert_model_directory(src_dir: Path, out_dir: Path):
             shutil.copy2(src_file, out_dir / filename)
             print(f"[OK] Copied {filename} -> {out_dir / filename}")
 
+def upload_to_hf(model_dir: Path, repo_id: str):
+    """Uploads converted model artifacts to a Hugging Face repository."""
+    print(f"Uploading converted FastFlowLM model artifacts from {model_dir} to Hugging Face repo: {repo_id}...")
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi()
+        api.create_repo(repo_id=repo_id, exist_ok=True, repo_type="model")
+        api.upload_folder(
+            folder_path=str(model_dir),
+            repo_id=repo_id,
+            repo_type="model",
+            commit_message="Add FastFlowLM NPU-compatible Maple-Preview weights"
+        )
+        print(f"[OK] Successfully uploaded model artifacts to https://huggingface.co/{repo_id}")
+    except Exception as e:
+        print(f"[ERROR] Failed to upload to Hugging Face: {e}", file=sys.stderr)
+
 def main():
     parser = argparse.ArgumentParser(description="Maple-Preview Checkpoint Converter and Quantizer (Phases 2 & 7)")
     parser.add_argument("--model", type=str, default=None, help="Hugging Face repo ID (e.g. deepgrove/maple-preview)")
     parser.add_argument("--src-dir", type=str, default=None, help="Source directory with HF checkpoint shards")
     parser.add_argument("--out-dir", type=str, required=True, help="Destination directory for FastFlowLM model files")
+    parser.add_argument("--upload-to-hf", type=str, default=None, help="Upload converted model artifacts to this Hugging Face repository (e.g. username/maple-preview-npu)")
     parser.add_argument("--ternary-2bit", action="store_true", help="Enable 2-bit packed ternary weight serialization")
     parser.add_argument("--generate-synthetic", action="store_true", help="Generate lightweight synthetic model for testing")
     parser.add_argument("--generate-manifests", action="store_true", help="Generate model_list and model_info manifest JSONs")
@@ -402,6 +420,8 @@ def main():
             vocab_size=1000,
             ternary_2bit=args.ternary_2bit
         )
+        if args.upload_to_hf:
+            upload_to_hf(out_dir, args.upload_to_hf)
         if args.generate_manifests:
             list_entry, info_entries = generate_manifest_entries(out_dir)
             print("\nGenerated Manifest Entry:")
@@ -420,6 +440,9 @@ def main():
 
     convert_sharded_checkpoint(src_dir, out_dir)
     
+    if args.upload_to_hf:
+        upload_to_hf(out_dir, args.upload_to_hf)
+
     if args.generate_manifests:
         list_entry, info_entries = generate_manifest_entries(out_dir)
         print("\nGenerated Manifest Entry:")
