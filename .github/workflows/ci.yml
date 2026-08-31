@@ -1,46 +1,109 @@
-name: CI
+name: FastFlowLM Maple-20B CI/CD & Binary Autobuilder
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
+    tags: [ 'v*' ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
   build-and-test:
+    name: Build, Verify & Release Binaries (Ubuntu 24.04)
     runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
 
-      - name: Install dependencies
+    steps:
+      - name: Checkout Maple-FLM Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up System Build Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
             cmake \
             ninja-build \
-            libboost-program-options-dev \
+            build-essential \
+            g++ \
+            gcc \
+            libboost-all-dev \
             libcurl4-openssl-dev \
-            libfftw3-dev \
+            libvulkan-dev \
+            vulkan-tools \
+            pkg-config \
             libreadline-dev \
-            libncurses-dev \
-            libavformat-dev \
-            libavcodec-dev \
-            libavutil-dev \
-            libswscale-dev \
-            libswresample-dev \
-            libomp-dev \
-            python3
+            libncurses5-dev \
+            libfftw3-dev \
+            python3 \
+            python3-pip
 
-      - name: Setup FastFlowLM
+      - name: Initialize FastFlowLM & Sync Maple Sources
         run: |
           bash scripts/setup_fastflowlm.sh
 
-      - name: Build FastFlowLM and Maple Suite
+      - name: Configure CMake and Compile Binaries with Ninja
         run: |
           bash scripts/build.sh
+          ninja -C FastFlowLM/src/build test_maple_vs_qwen36 test_agentic_benchmark
 
-      - name: Run Integration & Performance Tests
+      - name: Execute Full Maple Verification Test Suite
         run: |
           bash scripts/test_maple.sh
+
+      - name: Run Head-to-Head Qwen3.6 Benchmark Suite
+        run: |
+          FLM_XCLBIN_PATH=FastFlowLM/src/xclbins FLM_CONFIG_PATH=FastFlowLM/src/model_list.json ./FastFlowLM/src/build/test_maple_vs_qwen36
+
+      - name: Run 100,000-Token Agentic Scaling Benchmark
+        run: |
+          FLM_XCLBIN_PATH=FastFlowLM/src/xclbins FLM_CONFIG_PATH=FastFlowLM/src/model_list.json ./FastFlowLM/src/build/test_agentic_benchmark
+
+      - name: Package Release Binary Tarball
+        id: package
+        run: |
+          PACKAGE_DIR="flm-maple-linux-x86_64"
+          mkdir -p "${PACKAGE_DIR}/bin" "${PACKAGE_DIR}/share"
+          
+          cp -v FastFlowLM/src/build/flm "${PACKAGE_DIR}/bin/"
+          cp -v FastFlowLM/src/build/test_maple_integration "${PACKAGE_DIR}/bin/"
+          cp -v FastFlowLM/src/build/test_maple_high_context "${PACKAGE_DIR}/bin/"
+          cp -v FastFlowLM/src/build/test_agentic_benchmark "${PACKAGE_DIR}/bin/"
+          cp -v FastFlowLM/src/build/test_maple_vs_qwen36 "${PACKAGE_DIR}/bin/"
+          cp -v convert_maple.py "${PACKAGE_DIR}/bin/convert_maple"
+          cp -v install.sh "${PACKAGE_DIR}/"
+          cp -v FastFlowLM/src/model_list.json "${PACKAGE_DIR}/share/"
+          cp -v FastFlowLM/src/model_info.json "${PACKAGE_DIR}/share/"
+          cp -v README.md "${PACKAGE_DIR}/"
+          
+          tar -czvf flm-maple-linux-x86_64.tar.gz "${PACKAGE_DIR}"
+          echo "archive=flm-maple-linux-x86_64.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Upload CI Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flm-maple-linux-x86_64
+          path: flm-maple-linux-x86_64.tar.gz
+          retention-days: 14
+
+      - name: Publish GitHub Release (On Tags or Main Commits)
+        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: flm-maple-linux-x86_64.tar.gz
+          tag_name: ${{ github.ref_name }}
+          name: "FastFlowLM Maple-20B Release (${{ github.ref_name }})"
+          body: |
+            Automated production build for FastFlowLM Maple-20B.
+            
+            ### Included Binaries:
+            - `flm`: FastFlowLM Runtime CLI & OpenAI-compatible REST server
+            - `convert_maple`: Standalone HuggingFace -> Q4NX checkpoint converter
+            - `test_maple_vs_qwen36`: Head-to-head comparative benchmark suite
+            - `test_agentic_benchmark`: 100,000-token ultra-long context agentic benchmark
+            - `install.sh`: One-click system installer
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
