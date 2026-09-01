@@ -2,8 +2,17 @@
 # Maple-FLM Target Definitions for FastFlowLM
 # ==============================================================================
 
+# Add Maple engine sources and flags to the main flm CLI target
+if(TARGET flm)
+    target_sources(flm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/common/models/maple/maple_npu.cpp)
+    if(NOT WIN32)
+        target_compile_options(flm PRIVATE -mavx -mavx2 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512bf16 -mavx512vnni -mfma -O3)
+        target_link_libraries(flm PUBLIC vulkan dl)
+    endif()
+endif()
+
 # Maple integration test
-set(TEST_MAPLE_SRCS ${SOURCES} test/test_maple_integration.cpp)
+set(TEST_MAPLE_SRCS ${SOURCES} common/models/maple/maple_npu.cpp test/test_maple_integration.cpp)
 list(FILTER TEST_MAPLE_SRCS EXCLUDE REGEX ".*/src/main\\.cpp$")
 add_executable(test_maple_integration ${TEST_MAPLE_SRCS} ${HEADERS})
 target_include_directories(test_maple_integration PUBLIC
@@ -29,6 +38,7 @@ target_compile_definitions(test_maple_integration PUBLIC
 )
 target_link_directories(test_maple_integration PUBLIC
     ${FLM_ENGINE_LIB_DIR}
+    ${CMAKE_SOURCE_DIR}/lib/xrt
     ${CMAKE_SOURCE_DIR}/lib
     ${FFMPEG_LIBRARY_DIRS}
 )
@@ -71,11 +81,11 @@ if(NOT WIN32)
     endif()
     target_link_libraries(test_maple_integration PUBLIC dl aiebu xrt_coreutil vulkan Threads::Threads)
     set_target_properties(test_maple_integration PROPERTIES
-        BUILD_RPATH "${FLM_ENGINE_LIB_DIR}")
+        BUILD_RPATH "${FLM_ENGINE_LIB_DIR};${CMAKE_SOURCE_DIR}/lib/xrt;${CMAKE_SOURCE_DIR}/lib")
 endif()
 
 # Maple high-context test
-set(TEST_MAPLE_HIGH_CTX_SRCS ${SOURCES} test/test_maple_high_context.cpp)
+set(TEST_MAPLE_HIGH_CTX_SRCS ${SOURCES} common/models/maple/maple_npu.cpp test/test_maple_high_context.cpp)
 list(FILTER TEST_MAPLE_HIGH_CTX_SRCS EXCLUDE REGEX ".*/src/main\\.cpp$")
 add_executable(test_maple_high_context ${TEST_MAPLE_HIGH_CTX_SRCS} ${HEADERS})
 target_include_directories(test_maple_high_context PUBLIC
@@ -101,6 +111,7 @@ target_compile_definitions(test_maple_high_context PUBLIC
 )
 target_link_directories(test_maple_high_context PUBLIC
     ${FLM_ENGINE_LIB_DIR}
+    ${CMAKE_SOURCE_DIR}/lib/xrt
     ${CMAKE_SOURCE_DIR}/lib
     ${FFMPEG_LIBRARY_DIRS}
 )
@@ -143,11 +154,11 @@ if(NOT WIN32)
     endif()
     target_link_libraries(test_maple_high_context PUBLIC dl aiebu xrt_coreutil vulkan Threads::Threads)
     set_target_properties(test_maple_high_context PROPERTIES
-        BUILD_RPATH "${FLM_ENGINE_LIB_DIR}")
+        BUILD_RPATH "${FLM_ENGINE_LIB_DIR};${CMAKE_SOURCE_DIR}/lib/xrt;${CMAKE_SOURCE_DIR}/lib")
 endif()
 
 # Maple NPU Benchmark suite
-set(TEST_MAPLE_NPU_BENCH_SRCS ${SOURCES} test/test_maple_npu_bench.cpp)
+set(TEST_MAPLE_NPU_BENCH_SRCS ${SOURCES} common/models/maple/maple_npu.cpp test/test_maple_npu_bench.cpp)
 list(FILTER TEST_MAPLE_NPU_BENCH_SRCS EXCLUDE REGEX ".*/src/main\\.cpp$")
 add_executable(test_maple_npu_bench ${TEST_MAPLE_NPU_BENCH_SRCS} ${HEADERS})
 target_include_directories(test_maple_npu_bench PUBLIC
@@ -173,6 +184,7 @@ target_compile_definitions(test_maple_npu_bench PUBLIC
 )
 target_link_directories(test_maple_npu_bench PUBLIC
     ${FLM_ENGINE_LIB_DIR}
+    ${CMAKE_SOURCE_DIR}/lib/xrt
     ${CMAKE_SOURCE_DIR}/lib
     ${FFMPEG_LIBRARY_DIRS}
 )
@@ -215,11 +227,11 @@ if(NOT WIN32)
     endif()
     target_link_libraries(test_maple_npu_bench PUBLIC dl aiebu xrt_coreutil vulkan Threads::Threads)
     set_target_properties(test_maple_npu_bench PROPERTIES
-        BUILD_RPATH "${FLM_ENGINE_LIB_DIR}")
+        BUILD_RPATH "${FLM_ENGINE_LIB_DIR};${CMAKE_SOURCE_DIR}/lib/xrt;${CMAKE_SOURCE_DIR}/lib")
 endif()
 
 # Maple Capabilities & Benchmark Suite
-set(TEST_MAPLE_CAPABILITIES_SRCS ${SOURCES} test/test_maple_capabilities.cpp)
+set(TEST_MAPLE_CAPABILITIES_SRCS ${SOURCES} common/models/maple/maple_npu.cpp test/test_maple_capabilities.cpp)
 list(FILTER TEST_MAPLE_CAPABILITIES_SRCS EXCLUDE REGEX ".*/src/main\\.cpp$")
 add_executable(test_maple_capabilities ${TEST_MAPLE_CAPABILITIES_SRCS} ${HEADERS})
 target_include_directories(test_maple_capabilities PUBLIC
@@ -245,6 +257,7 @@ target_compile_definitions(test_maple_capabilities PUBLIC
 )
 target_link_directories(test_maple_capabilities PUBLIC
     ${FLM_ENGINE_LIB_DIR}
+    ${CMAKE_SOURCE_DIR}/lib/xrt
     ${CMAKE_SOURCE_DIR}/lib
     ${FFMPEG_LIBRARY_DIRS}
 )
@@ -287,11 +300,11 @@ if(NOT WIN32)
     endif()
     target_link_libraries(test_maple_capabilities PUBLIC dl aiebu xrt_coreutil vulkan Threads::Threads)
     set_target_properties(test_maple_capabilities PROPERTIES
-        BUILD_RPATH "${FLM_ENGINE_LIB_DIR}")
+        BUILD_RPATH "${FLM_ENGINE_LIB_DIR};${CMAKE_SOURCE_DIR}/lib/xrt;${CMAKE_SOURCE_DIR}/lib")
 endif()
 
 # Maple Agentic & High-Context Benchmark Suite
-set(TEST_AGENTIC_BENCH_SRCS ${SOURCES} test/test_agentic_benchmark.cpp)
+set(TEST_AGENTIC_BENCH_SRCS ${SOURCES} common/models/maple/maple_npu.cpp test/test_agentic_benchmark.cpp)
 list(FILTER TEST_AGENTIC_BENCH_SRCS EXCLUDE REGEX ".*/src/main\\.cpp$")
 add_executable(test_agentic_benchmark ${TEST_AGENTIC_BENCH_SRCS} ${HEADERS})
 target_include_directories(test_agentic_benchmark PUBLIC
@@ -317,6 +330,7 @@ target_compile_definitions(test_agentic_benchmark PUBLIC
 )
 target_link_directories(test_agentic_benchmark PUBLIC
     ${FLM_ENGINE_LIB_DIR}
+    ${CMAKE_SOURCE_DIR}/lib/xrt
     ${CMAKE_SOURCE_DIR}/lib
     ${FFMPEG_LIBRARY_DIRS}
 )
@@ -359,11 +373,11 @@ if(NOT WIN32)
     endif()
     target_link_libraries(test_agentic_benchmark PUBLIC dl aiebu xrt_coreutil vulkan Threads::Threads)
     set_target_properties(test_agentic_benchmark PROPERTIES
-        BUILD_RPATH "${FLM_ENGINE_LIB_DIR}")
+        BUILD_RPATH "${FLM_ENGINE_LIB_DIR};${CMAKE_SOURCE_DIR}/lib/xrt;${CMAKE_SOURCE_DIR}/lib")
 endif()
 
 # Maple-20B vs Qwen3.6 MoE Comparative Benchmark Suite
-set(TEST_MAPLE_VS_QWEN36_SRCS ${SOURCES} test/test_maple_vs_qwen36.cpp)
+set(TEST_MAPLE_VS_QWEN36_SRCS ${SOURCES} common/models/maple/maple_npu.cpp test/test_maple_vs_qwen36.cpp)
 list(FILTER TEST_MAPLE_VS_QWEN36_SRCS EXCLUDE REGEX ".*/src/main\\.cpp$")
 add_executable(test_maple_vs_qwen36 ${TEST_MAPLE_VS_QWEN36_SRCS} ${HEADERS})
 target_include_directories(test_maple_vs_qwen36 PUBLIC
@@ -389,6 +403,7 @@ target_compile_definitions(test_maple_vs_qwen36 PUBLIC
 )
 target_link_directories(test_maple_vs_qwen36 PUBLIC
     ${FLM_ENGINE_LIB_DIR}
+    ${CMAKE_SOURCE_DIR}/lib/xrt
     ${CMAKE_SOURCE_DIR}/lib
     ${FFMPEG_LIBRARY_DIRS}
 )
@@ -431,5 +446,5 @@ if(NOT WIN32)
     endif()
     target_link_libraries(test_maple_vs_qwen36 PUBLIC dl aiebu xrt_coreutil vulkan Threads::Threads)
     set_target_properties(test_maple_vs_qwen36 PROPERTIES
-        BUILD_RPATH "${FLM_ENGINE_LIB_DIR}")
+        BUILD_RPATH "${FLM_ENGINE_LIB_DIR};${CMAKE_SOURCE_DIR}/lib/xrt;${CMAKE_SOURCE_DIR}/lib")
 endif()
