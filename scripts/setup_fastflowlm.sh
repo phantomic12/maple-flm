@@ -26,6 +26,11 @@ cp -v "${ROOT_DIR}/flm_maple/common/models/maple/maple_npu.cpp" src/common/model
 cp -v "${ROOT_DIR}/flm_maple/test/"*.cpp src/test/
 cp -v "${ROOT_DIR}/convert_maple.py" .
 
+if [ -d "${ROOT_DIR}/flm_maple/include/xrt_headers" ]; then
+    echo "Providing portable XRT headers to FastFlowLM include tree..."
+    cp -rn "${ROOT_DIR}/flm_maple/include/xrt_headers/"* src/include/ || true
+fi
+
 echo "Injecting Maple manifests, CMake targets, and AutoModel bindings..."
 python3 - << 'EOF'
 import json
