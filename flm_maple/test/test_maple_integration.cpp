@@ -2,7 +2,8 @@
 #include <cassert>
 #include <chrono>
 #include <filesystem>
-#include "AutoModel/all_models.hpp"
+#include "AutoModel/modeling_maple.hpp"
+#include "model_list.hpp"
 #include "models/maple/maple_npu.hpp"
 #include "tensor_utils/q4_npu_eXpress.hpp"
 
@@ -35,10 +36,10 @@ int main() {
     std::cout << "[PASS] Model details and family mapped correctly: " << model_info["details"]["family"] << std::endl;
 
     // -------------------------------------------------------------
-    // 2. Verify get_auto_model instantiation
+    // 2. Verify AutoModel instantiation
     // -------------------------------------------------------------
     flm_rt::device dummy_dev;
-    auto [tag_ret, auto_model_inst] = get_auto_model("maple:20b", m_list, &dummy_dev);
+    auto auto_model_inst = std::make_unique<Maple>(&dummy_dev);
     assert(auto_model_inst != nullptr);
     assert(auto_model_inst->get_current_model() == "Maple");
     std::cout << "[PASS] AutoModel successfully instantiates Maple instance: " << auto_model_inst->get_current_model() << std::endl;

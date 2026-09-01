@@ -5,7 +5,7 @@
 #include <string>
 #include <cmath>
 #include <filesystem>
-#include "AutoModel/all_models.hpp"
+#include "AutoModel/modeling_maple.hpp"
 #include "models/maple/maple_npu.hpp"
 #include "tensor_utils/q4_npu_eXpress.hpp"
 
