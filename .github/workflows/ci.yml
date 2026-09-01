@@ -123,6 +123,12 @@ jobs:
           cp -a /usr/lib/x86_64-linux-gnu/libreadline* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
           cp -a /usr/lib/x86_64-linux-gnu/libncurses* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
           cp -a /usr/lib/x86_64-linux-gnu/libtinfo* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          cp -a /usr/lib/x86_64-linux-gnu/libxml2* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          cp -a /usr/lib/x86_64-linux-gnu/liblzma* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          cp -a /usr/lib/x86_64-linux-gnu/libzstd* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          cp -a /usr/lib/x86_64-linux-gnu/libz.* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          cp -a /usr/lib/x86_64-linux-gnu/libcrypto* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          cp -a /usr/lib/x86_64-linux-gnu/libssl* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
 
           # 4. Bitstreams and Configs
           if [ -d "FastFlowLM/src/xclbins" ]; then
