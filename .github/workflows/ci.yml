@@ -8,6 +8,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-and-test:
     name: Build, Verify & Release Binaries (Ubuntu 24.04)
@@ -60,13 +63,13 @@ jobs:
 
       - name: Execute Full Maple Verification Test Suite
         run: |
-            bash scripts/test_maple.sh
+          bash scripts/test_maple.sh
 
       - name: Package Release Binary Tarball
         id: package
         run: |
           PACKAGE_DIR="flm-maple-linux-x86_64"
-          mkdir -p "${PACKAGE_DIR}/bin" "${PACKAGE_DIR}/share"
+          mkdir -p "${PACKAGE_DIR}/bin" "${PACKAGE_DIR}/share/flm" "${PACKAGE_DIR}/share/fastflowlm"
           
           cp -v FastFlowLM/src/build/flm "${PACKAGE_DIR}/bin/"
           cp -v FastFlowLM/src/build/test_maple_integration "${PACKAGE_DIR}/bin/"
@@ -74,9 +77,16 @@ jobs:
           cp -v FastFlowLM/src/build/test_agentic_benchmark "${PACKAGE_DIR}/bin/"
           cp -v FastFlowLM/src/build/test_maple_vs_qwen36 "${PACKAGE_DIR}/bin/"
           cp -v convert_maple.py "${PACKAGE_DIR}/bin/convert_maple"
+          chmod +x "${PACKAGE_DIR}/bin/"*
+          
+          cp -v FastFlowLM/src/model_list.json "${PACKAGE_DIR}/bin/"
+          cp -v FastFlowLM/src/model_info.json "${PACKAGE_DIR}/bin/"
+          cp -v FastFlowLM/src/model_list.json "${PACKAGE_DIR}/share/flm/"
+          cp -v FastFlowLM/src/model_info.json "${PACKAGE_DIR}/share/flm/"
+          cp -v FastFlowLM/src/model_list.json "${PACKAGE_DIR}/share/fastflowlm/"
+          cp -v FastFlowLM/src/model_info.json "${PACKAGE_DIR}/share/fastflowlm/"
+          
           cp -v install.sh "${PACKAGE_DIR}/"
-          cp -v FastFlowLM/src/model_list.json "${PACKAGE_DIR}/share/"
-          cp -v FastFlowLM/src/model_info.json "${PACKAGE_DIR}/share/"
           cp -v README.md "${PACKAGE_DIR}/"
           
           tar -czvf flm-maple-linux-x86_64.tar.gz "${PACKAGE_DIR}"
@@ -89,23 +99,32 @@ jobs:
           path: flm-maple-linux-x86_64.tar.gz
           retention-days: 14
 
-      - name: Publish GitHub Release (On Tags)
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Publish GitHub Release (Latest Commit & Tags)
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: flm-maple-linux-x86_64.tar.gz
-          tag_name: ${{ github.ref_name }}
-          name: "FastFlowLM Maple-20B Release (${{ github.ref_name }})"
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && format('FastFlowLM Maple-20B Release ({0})', github.ref_name) || format('FastFlowLM Maple-20B (latest: {0})', github.sha) }}
           body: |
-            Automated production build for FastFlowLM Maple-20B.
+            Automated production build for commit `${{ github.sha }}`.
             
             ### Included Binaries:
             - `flm`: FastFlowLM Runtime CLI & OpenAI-compatible REST server
             - `convert_maple`: Standalone HuggingFace -> Q4NX checkpoint converter
+            - `test_maple_integration`: Comprehensive unit & integration verification
+            - `test_maple_high_context`: 128K context scaling test
             - `test_maple_vs_qwen36`: Head-to-head comparative benchmark suite
             - `test_agentic_benchmark`: 100,000-token ultra-long context agentic benchmark
             - `install.sh`: One-click system installer
+            
+            ### One-Line Install via curl:
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/phantomic12/maple-flm/main/install.sh | bash
+            ```
           draft: false
           prerelease: false
+          make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

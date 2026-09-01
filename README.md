@@ -40,28 +40,26 @@
 
 ## 🛠️ Quickstart
 
-### 1. One-Click Installation
+### 1. One-Line Install via `curl`
 ```bash
-# Clone the repository
-git clone https://github.com/phantomic12/maple-flm.git
-cd maple-flm
-
-# Run automated installer (compiles FastFlowLM with AVX2 & NPU kernels)
-bash install.sh
-
-# Activate environment
-source env.sh
+# Pulls latest pre-compiled release binary and installs to ~/.local/bin (or /usr/local/bin)
+curl -fsSL https://raw.githubusercontent.com/phantomic12/maple-flm/main/install.sh | bash
 ```
 
-### 2. Interactive Terminal Chat on NPU
-```bash
-bash scripts/chat_maple.sh
-```
+### 2. Standard `flm` Command Syntax
 
-### 3. Launch OpenAI-Compatible REST Server
 ```bash
-bash scripts/serve_maple.sh
-# Endpoints available at http://localhost:8080/v1/chat/completions
+# 1. Pull model weights directly from HuggingFace (deepgrove/maple-preview)
+flm pull maple
+
+# 2. Launch interactive reasoning chat in your terminal
+flm run maple
+
+# 3. Start OpenAI-compatible HTTP/REST inference server
+flm serve --model maple:20b --port 8080
+
+# 4. List installed models
+flm list
 ```
 
 ### 4. Run Verification Suite

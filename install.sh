@@ -2,11 +2,9 @@
 # ==============================================================================
 # FastFlowLM Maple-20B: Autonomous Production System Installer
 # Targets: AMD Ryzen AI 9 HX 370 / Zen 5 AVX-512, XDNA 2 NPU, Radeon 890M Vulkan
+# Supports: One-line curl install from GitHub Releases or compilation from source
 # ==============================================================================
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "${SCRIPT_DIR}"
 
 # Terminal Colors
 RED='\033[0;31m'
@@ -30,27 +28,35 @@ if [ "${EUID:-$(id -u)}" -ne 0 ] && [ "${PREFIX}" = "/usr/local" ]; then
 fi
 
 DRY_RUN=0
-SKIP_BUILD=0
+FORCE_BUILD=0
+RELEASE_TAG="latest"
+RELEASE_REPO="phantomic12/maple-flm"
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --prefix)
             PREFIX="$2"
             shift 2
             ;;
+        --tag)
+            RELEASE_TAG="$2"
+            shift 2
+            ;;
         --dry-run)
             DRY_RUN=1
             shift
             ;;
-        --skip-build)
-            SKIP_BUILD=1
+        --build|--from-source)
+            FORCE_BUILD=1
             shift
             ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo "Options:"
-            echo "  --prefix <PATH>    Installation prefix (default: /usr/local or ~/.local)"
-            echo "  --dry-run          Probe system and validate environment without building/installing"
-            echo "  --skip-build       Install pre-compiled binaries from build directory"
+            echo "  --prefix <PATH>       Installation prefix (default: /usr/local or ~/.local)"
+            echo "  --tag <TAG>           Release tag to download (default: latest)"
+            echo "  --build               Force build from source instead of downloading release binary"
+            echo "  --dry-run             Probe system and validate environment without installing"
             exit 0
             ;;
         *)
@@ -64,7 +70,7 @@ echo -e "${BLUE}[*] Target Installation Prefix: ${BOLD}${PREFIX}${NC}"
 
 # 1. Hardware Probing
 echo -e "\n${CYAN}--> 1. Probing System Hardware Architecture...${NC}"
-CPU_THREADS=$(nproc || echo 1)
+CPU_THREADS=$(nproc 2>/dev/null || echo 1)
 echo -e "  - CPU Threads Detected: ${BOLD}${CPU_THREADS}${NC}"
 
 if grep -q "avx512f" /proc/cpuinfo 2>/dev/null; then
@@ -85,84 +91,185 @@ else
     echo -e "  - Vulkan GPU Device:    ${YELLOW}Render node not found${NC}"
 fi
 
-# 2. Dependency Checks
-echo -e "\n${CYAN}--> 2. Validating Core Build Dependencies...${NC}"
-REQUIRED_TOOLS=("cmake" "ninja" "g++" "python3" "git")
-MISSING_TOOLS=()
-
-for tool in "${REQUIRED_TOOLS[@]}"; do
-    if command -v "${tool}" >/dev/null 2>&1; then
-        echo -e "  - Tool [${tool}]: ${GREEN}OK${NC} ($(command -v "${tool}"))"
-    else
-        echo -e "  - Tool [${tool}]: ${RED}MISSING${NC}"
-        MISSING_TOOLS+=("${tool}")
-    fi
-done
-
-if [ ${#MISSING_TOOLS[@]} -gt 0 ]; then
-    echo -e "\n${YELLOW}[!] Some required build tools are missing: ${MISSING_TOOLS[*]}${NC}"
-    echo "    Please install them using your package manager (e.g. sudo apt-get install cmake ninja-build build-essential)"
-    if [ ${DRY_RUN} -eq 0 ]; then
-        exit 1
-    fi
-fi
-
 if [ ${DRY_RUN} -eq 1 ]; then
     echo -e "\n${GREEN}[OK] Dry run completed successfully. System is compatible with FastFlowLM Maple-20B!${NC}"
     exit 0
 fi
 
-# 3. Setup FastFlowLM and Inject Maple Sources
-echo -e "\n${CYAN}--> 3. Syncing FastFlowLM Repository & Injecting Maple Engine...${NC}"
-bash scripts/setup_fastflowlm.sh
+# 2. Determine Installation Source (Pre-built Binaries vs Source Build)
+mkdir -p "${PREFIX}/bin" "${PREFIX}/share/flm" "${PREFIX}/share/fastflowlm"
 
-# 4. Build FastFlowLM
-if [ ${SKIP_BUILD} -eq 0 ]; then
-    echo -e "\n${CYAN}--> 4. Compiling FastFlowLM with AVX-512 & OpenMP Optimizations...${NC}"
+INSTALL_BINS=("flm" "test_maple_integration" "test_maple_high_context" "test_agentic_benchmark" "test_maple_vs_qwen36")
+INSTALLED_FROM=""
+
+# Case A: Local pre-built directory or extracted archive
+if [ ${FORCE_BUILD} -eq 0 ] && [ -f "bin/flm" ]; then
+    echo -e "\n${CYAN}--> 2. Installing from local pre-compiled package...${NC}"
+    for bin in "${INSTALL_BINS[@]}"; do
+        if [ -f "bin/${bin}" ]; then
+            cp -vf "bin/${bin}" "${PREFIX}/bin/"
+            chmod +x "${PREFIX}/bin/${bin}"
+        fi
+    done
+    if [ -f "bin/convert_maple" ]; then
+        cp -vf "bin/convert_maple" "${PREFIX}/bin/"
+        chmod +x "${PREFIX}/bin/convert_maple"
+    elif [ -f "convert_maple.py" ]; then
+        cp -vf "convert_maple.py" "${PREFIX}/bin/convert_maple"
+        chmod +x "${PREFIX}/bin/convert_maple"
+    fi
+    for dir in share/flm share/fastflowlm .; do
+        if [ -f "${dir}/model_list.json" ]; then
+            cp -vf "${dir}/model_list.json" "${PREFIX}/bin/"
+            cp -vf "${dir}/model_list.json" "${PREFIX}/share/flm/"
+            cp -vf "${dir}/model_list.json" "${PREFIX}/share/fastflowlm/"
+            break
+        fi
+    done
+    for dir in share/flm share/fastflowlm .; do
+        if [ -f "${dir}/model_info.json" ]; then
+            cp -vf "${dir}/model_info.json" "${PREFIX}/bin/"
+            cp -vf "${dir}/model_info.json" "${PREFIX}/share/flm/"
+            cp -vf "${dir}/model_info.json" "${PREFIX}/share/fastflowlm/"
+            break
+        fi
+    done
+    INSTALLED_FROM="local package"
+
+# Case B: Local build directory (e.g. inside repo after ninja build)
+elif [ ${FORCE_BUILD} -eq 0 ] && [ -f "FastFlowLM/src/build/flm" ]; then
+    echo -e "\n${CYAN}--> 2. Installing from FastFlowLM build directory...${NC}"
+    for bin in "${INSTALL_BINS[@]}"; do
+        if [ -f "FastFlowLM/src/build/${bin}" ]; then
+            cp -vf "FastFlowLM/src/build/${bin}" "${PREFIX}/bin/"
+            chmod +x "${PREFIX}/bin/${bin}"
+        fi
+    done
+    if [ -f "convert_maple.py" ]; then
+        cp -vf "convert_maple.py" "${PREFIX}/bin/convert_maple"
+        chmod +x "${PREFIX}/bin/convert_maple"
+    fi
+    if [ -f "FastFlowLM/src/model_list.json" ]; then
+        cp -vf "FastFlowLM/src/model_list.json" "${PREFIX}/bin/"
+        cp -vf "FastFlowLM/src/model_list.json" "${PREFIX}/share/flm/"
+        cp -vf "FastFlowLM/src/model_list.json" "${PREFIX}/share/fastflowlm/"
+    fi
+    if [ -f "FastFlowLM/src/model_info.json" ]; then
+        cp -vf "FastFlowLM/src/model_info.json" "${PREFIX}/bin/"
+        cp -vf "FastFlowLM/src/model_info.json" "${PREFIX}/share/flm/"
+        cp -vf "FastFlowLM/src/model_info.json" "${PREFIX}/share/fastflowlm/"
+    fi
+    INSTALLED_FROM="local build"
+
+# Case C: Download latest release binary from GitHub Releases
+elif [ ${FORCE_BUILD} -eq 0 ]; then
+    echo -e "\n${CYAN}--> 2. Fetching Pre-compiled FastFlowLM Maple-20B Release (${RELEASE_TAG})...${NC}"
+    TMP_DIR=$(mktemp -d /tmp/flm-install-XXXXXX)
+    trap 'rm -rf "${TMP_DIR}"' EXIT
+
+    ARCHIVE_URL="https://github.com/${RELEASE_REPO}/releases/download/${RELEASE_TAG}/flm-maple-linux-x86_64.tar.gz"
+    echo -e "  - Downloading from: ${BOLD}${ARCHIVE_URL}${NC}"
+    
+    if curl -fsSL "${ARCHIVE_URL}" -o "${TMP_DIR}/release.tar.gz"; then
+        echo -e "  - ${GREEN}[OK]${NC} Download completed. Extracting archive..."
+        tar -xzf "${TMP_DIR}/release.tar.gz" -C "${TMP_DIR}"
+        
+        PKG_ROOT="${TMP_DIR}/flm-maple-linux-x86_64"
+        if [ ! -d "${PKG_ROOT}" ]; then
+            PKG_ROOT="${TMP_DIR}"
+        fi
+
+        for bin in "${INSTALL_BINS[@]}"; do
+            if [ -f "${PKG_ROOT}/bin/${bin}" ]; then
+                cp -vf "${PKG_ROOT}/bin/${bin}" "${PREFIX}/bin/"
+                chmod +x "${PREFIX}/bin/${bin}"
+            fi
+        done
+        if [ -f "${PKG_ROOT}/bin/convert_maple" ]; then
+            cp -vf "${PKG_ROOT}/bin/convert_maple" "${PREFIX}/bin/"
+            chmod +x "${PREFIX}/bin/convert_maple"
+        fi
+        for mf in model_list.json model_info.json; do
+            for loc in "${PKG_ROOT}/bin" "${PKG_ROOT}/share" "${PKG_ROOT}/share/flm" "${PKG_ROOT}/share/fastflowlm" "${PKG_ROOT}"; do
+                if [ -f "${loc}/${mf}" ]; then
+                    cp -vf "${loc}/${mf}" "${PREFIX}/bin/"
+                    cp -vf "${loc}/${mf}" "${PREFIX}/share/flm/"
+                    cp -vf "${loc}/${mf}" "${PREFIX}/share/fastflowlm/"
+                    break
+                fi
+            done
+        done
+        INSTALLED_FROM="GitHub Releases (${RELEASE_TAG})"
+    else
+        echo -e "${YELLOW}[!] Pre-compiled release asset not reachable, falling back to source build...${NC}"
+        FORCE_BUILD=1
+    fi
+fi
+
+# Case D: Build from source if requested or needed
+if [ ${FORCE_BUILD} -eq 1 ]; then
+    echo -e "\n${CYAN}--> 2. Building FastFlowLM from Source...${NC}"
+    REQUIRED_TOOLS=("cmake" "ninja" "g++" "python3" "git")
+    for tool in "${REQUIRED_TOOLS[@]}"; do
+        if ! command -v "${tool}" >/dev/null 2>&1; then
+            echo -e "${RED}[ERROR] Required build tool '${tool}' is missing. Please install cmake, ninja-build, g++, and git.${NC}"
+            exit 1
+        fi
+    done
+
+    bash scripts/setup_fastflowlm.sh
     bash scripts/build.sh
     ninja -C FastFlowLM/src/build test_maple_vs_qwen36 test_agentic_benchmark
-fi
 
-# 5. Install Binaries and Assets
-echo -e "\n${CYAN}--> 5. Installing Binaries to ${PREFIX}/bin...${NC}"
-mkdir -p "${PREFIX}/bin" "${PREFIX}/share/fastflowlm"
-
-BIN_SRC="FastFlowLM/src/build"
-INSTALL_BINS=("flm" "test_maple_integration" "test_maple_high_context" "test_agentic_benchmark" "test_maple_vs_qwen36")
-
-for bin in "${INSTALL_BINS[@]}"; do
-    if [ -f "${BIN_SRC}/${bin}" ]; then
-        cp -v "${BIN_SRC}/${bin}" "${PREFIX}/bin/"
-        chmod +x "${PREFIX}/bin/${bin}"
+    for bin in "${INSTALL_BINS[@]}"; do
+        if [ -f "FastFlowLM/src/build/${bin}" ]; then
+            cp -vf "FastFlowLM/src/build/${bin}" "${PREFIX}/bin/"
+            chmod +x "${PREFIX}/bin/${bin}"
+        fi
+    done
+    if [ -f "convert_maple.py" ]; then
+        cp -vf "convert_maple.py" "${PREFIX}/bin/convert_maple"
+        chmod +x "${PREFIX}/bin/convert_maple"
     fi
-done
-
-cp -v convert_maple.py "${PREFIX}/bin/convert_maple"
-chmod +x "${PREFIX}/bin/convert_maple"
-
-if [ -f "FastFlowLM/src/model_list.json" ]; then
-    cp -v FastFlowLM/src/model_list.json "${PREFIX}/share/fastflowlm/"
+    if [ -f "FastFlowLM/src/model_list.json" ]; then
+        cp -vf "FastFlowLM/src/model_list.json" "${PREFIX}/bin/"
+        cp -vf "FastFlowLM/src/model_list.json" "${PREFIX}/share/flm/"
+        cp -vf "FastFlowLM/src/model_list.json" "${PREFIX}/share/fastflowlm/"
+    fi
+    if [ -f "FastFlowLM/src/model_info.json" ]; then
+        cp -vf "FastFlowLM/src/model_info.json" "${PREFIX}/bin/"
+        cp -vf "FastFlowLM/src/model_info.json" "${PREFIX}/share/flm/"
+        cp -vf "FastFlowLM/src/model_info.json" "${PREFIX}/share/fastflowlm/"
+    fi
+    INSTALLED_FROM="source compilation"
 fi
-if [ -f "FastFlowLM/src/model_info.json" ]; then
-    cp -v FastFlowLM/src/model_info.json "${PREFIX}/share/fastflowlm/"
-fi
 
-# 6. Verify Installation
-echo -e "\n${CYAN}--> 6. Verifying Installation Smoke Tests...${NC}"
+# 3. Verify Installation
+echo -e "\n${CYAN}--> 3. Verifying Installation Smoke Tests...${NC}"
 export PATH="${PREFIX}/bin:${PATH}"
 
 if command -v flm >/dev/null 2>&1; then
     echo -e "  - ${GREEN}[PASS]${NC} FastFlowLM CLI: ${BOLD}$(flm --version 2>&1 || echo 'flm 1.0.0')${NC}"
 else
-    echo -e "  - ${YELLOW}[WARN]${NC} 'flm' not in immediate PATH. Add export PATH=\"${PREFIX}/bin:\$PATH\" to your ~/.bashrc"
+    echo -e "  - ${YELLOW}[WARN]${NC} 'flm' not found in active PATH. Add to your shell profile (~/.bashrc or ~/.zshrc):"
+    echo -e "      ${BOLD}export PATH=\"${PREFIX}/bin:\$PATH\"${NC}"
 fi
 
 echo -e "\n${GREEN}${BOLD}================================================================================${NC}"
-echo -e "${GREEN}${BOLD}  FastFlowLM Maple-20B Installation Complete!                                   ${NC}"
+echo -e "${GREEN}${BOLD}  FastFlowLM Maple-20B Successfully Installed from ${INSTALLED_FROM}!          ${NC}"
 echo -e "${GREEN}${BOLD}================================================================================${NC}"
-echo -e "To start serving Maple-20B:"
-echo -e "  ${CYAN}flm serve --model maple:20b --port 8080${NC}"
-echo -e "To run the full agentic benchmark:"
-echo -e "  ${CYAN}test_agentic_benchmark${NC}"
-echo -e "To run the head-to-head Qwen3.6 comparative benchmark:"
-echo -e "  ${CYAN}test_maple_vs_qwen36${NC}"
+echo -e "\n${BOLD}FastFlowLM CLI Commands:${NC}"
+echo -e "  1. Pull weights from HuggingFace:"
+echo -e "     ${CYAN}flm pull maple${NC}"
+echo -e "     ${CYAN}flm pull deepgrove/maple-preview${NC}"
+echo -e "\n  2. Run interactive reasoning chat:"
+echo -e "     ${CYAN}flm run maple${NC}"
+echo -e "\n  3. Start OpenAI-compatible HTTP/REST server:"
+echo -e "     ${CYAN}flm serve --model maple:20b --port 8080${NC}"
+echo -e "\n  4. List models and hardware status:"
+echo -e "     ${CYAN}flm list${NC}"
+echo -e "\n  5. Run test verification and agentic benchmarks:"
+echo -e "     ${CYAN}test_maple_integration${NC}"
+echo -e "     ${CYAN}test_agentic_benchmark${NC}"
+echo -e "     ${CYAN}test_maple_vs_qwen36${NC}"
+echo ""
