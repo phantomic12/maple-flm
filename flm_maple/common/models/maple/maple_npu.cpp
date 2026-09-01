@@ -602,6 +602,25 @@ inline void accumulate_scaled_from_kv16(float* out, const uint16_t* v, float sca
     }
 }
 
+inline void unpack_bf16_to_f32(const uint16_t* src, float* dst, size_t n) {
+    size_t i = 0;
+    for (; i + 16 <= n; i += 16) {
+        __m128i raw_low = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i));
+        __m256 f_low = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(raw_low), 16));
+        _mm256_storeu_ps(dst + i, f_low);
+
+        __m128i raw_high = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i + 8));
+        __m256 f_high = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_cvtepu16_epi32(raw_high), 16));
+        _mm256_storeu_ps(dst + i + 8, f_high);
+    }
+    for (; i < n; ++i) {
+        uint32_t bits = static_cast<uint32_t>(src[i]) << 16;
+        float f;
+        std::memcpy(&f, &bits, 4);
+        dst[i] = f;
+    }
+}
+
 inline void rms_norm_inplace(float* x, const bf16* weight, size_t size, float eps) {
     __m256 sq_acc = _mm256_setzero_ps();
     size_t i = 0;
