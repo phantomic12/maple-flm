@@ -78,9 +78,14 @@ if cm_path.exists():
         '-mavx -mavx2 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512bf16 -mavx512vnni -mfma -O3',
         '-mavx -mavx2 -mfma -O3'
     )
-    if "test_maple_integration" not in cm_content and targets_cmake_path.exists():
+    marker = "# === Maple Targets Injection ==="
+    if marker in cm_content:
+        cm_content = cm_content.split(marker)[0]
+    elif "test_maple_integration" in cm_content:
+        cm_content = cm_content.split("# Maple-FLM Target Definitions for FastFlowLM")[0]
+    if targets_cmake_path.exists():
         targets_cmake = targets_cmake_path.read_text()
-        cm_content = cm_content + "\n\n" + targets_cmake
+        cm_content = cm_content.strip() + "\n\n" + marker + "\n" + targets_cmake
         print("[OK] CMake targets injected into CMakeLists.txt")
     cm_path.write_text(cm_content)
 
