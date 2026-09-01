@@ -28,6 +28,12 @@ set(MAPLE_STANDALONE_SRCS
 )
 
 set(MAPLE_BASE_LIBS
+    q4_npu_eXpress
+    lm_head
+    gemm
+    dequant
+    mha
+    xrt_coreutil
     Boost::program_options
     CURL::libcurl
     PkgConfig::FFTW3
@@ -52,6 +58,11 @@ macro(add_maple_test_target TARGET_NAME TEST_SRC)
         ${CMAKE_SOURCE_DIR}/pull
         ${CMAKE_SOURCE_DIR}/include/xrt_headers
     )
+    target_link_directories(${TARGET_NAME} PUBLIC
+        ${FLM_ENGINE_LIB_DIR}
+        ${CMAKE_SOURCE_DIR}/lib/xrt
+        ${CMAKE_SOURCE_DIR}/lib
+    )
     target_compile_definitions(${TARGET_NAME} PUBLIC
         DISABLE_ABI_CHECK=1
         CMAKE_INSTALL_PREFIX="${CMAKE_INSTALL_PREFIX}"
@@ -61,6 +72,8 @@ macro(add_maple_test_target TARGET_NAME TEST_SRC)
     )
     if(NOT WIN32)
         target_compile_options(${TARGET_NAME} PUBLIC -mavx -mavx2 -mfma -O3)
+        set_target_properties(${TARGET_NAME} PROPERTIES
+            BUILD_RPATH "${FLM_ENGINE_LIB_DIR};${CMAKE_SOURCE_DIR}/lib/xrt;${CMAKE_SOURCE_DIR}/lib")
     endif()
     target_link_libraries(${TARGET_NAME} PUBLIC ${MAPLE_BASE_LIBS})
 endmacro()
