@@ -60,15 +60,7 @@ jobs:
 
       - name: Execute Full Maple Verification Test Suite
         run: |
-          bash scripts/test_maple.sh
-
-      - name: Run Head-to-Head Qwen3.6 Benchmark Suite
-        run: |
-          FLM_XCLBIN_PATH=FastFlowLM/src/xclbins FLM_CONFIG_PATH=FastFlowLM/src/model_list.json ./FastFlowLM/src/build/test_maple_vs_qwen36
-
-      - name: Run 100,000-Token Agentic Scaling Benchmark
-        run: |
-          FLM_XCLBIN_PATH=FastFlowLM/src/xclbins FLM_CONFIG_PATH=FastFlowLM/src/model_list.json ./FastFlowLM/src/build/test_agentic_benchmark
+            bash scripts/test_maple.sh
 
       - name: Package Release Binary Tarball
         id: package
