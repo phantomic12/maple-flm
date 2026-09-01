@@ -36,6 +36,10 @@ if [ -d "${ROOT_DIR}/flm_maple/lib/xrt" ]; then
     mkdir -p src/lib/xrt src/lib
     cp -rn "${ROOT_DIR}/flm_maple/lib/xrt/"* src/lib/xrt/ || true
     cp -rn "${ROOT_DIR}/flm_maple/lib/xrt/"* src/lib/ || true
+    if [ -f "src/lib/xrt/libxrt_coreutil.so.2" ]; then
+        ln -sf libxrt_coreutil.so.2 src/lib/xrt/libxrt_coreutil.so
+        ln -sf libxrt_coreutil.so.2 src/lib/libxrt_coreutil.so
+    fi
 fi
 
 echo "Injecting Maple manifests, CMake targets, and AutoModel bindings..."
