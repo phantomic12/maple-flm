@@ -906,13 +906,18 @@ struct maple_npu::Impl {
             omp_set_num_threads(4);
 #endif
         } else {
-            try {
-                vulkan_engine = std::make_unique<VulkanComputeEngine>();
-                if (!vulkan_engine->initialize()) {
+            const char* gpu_env = std::getenv("FLM_ENABLE_GPU");
+            if (!gpu_env) gpu_env = std::getenv("FLM_USE_VULKAN");
+            if (!gpu_env) gpu_env = std::getenv("FLM_GPU");
+            if (gpu_env && (std::string(gpu_env) == "1" || std::string(gpu_env) == "true" || std::string(gpu_env) == "on")) {
+                try {
+                    vulkan_engine = std::make_unique<VulkanComputeEngine>();
+                    if (!vulkan_engine->initialize()) {
+                        vulkan_engine = nullptr;
+                    }
+                } catch (...) {
                     vulkan_engine = nullptr;
                 }
-            } catch (...) {
-                vulkan_engine = nullptr;
             }
         }
 
@@ -1996,13 +2001,18 @@ void maple_npu::set_power_mode(PowerMode mode) {
     } else {
         omp_set_num_threads(24);
         if (!_impl->vulkan_engine) {
-            try {
-                _impl->vulkan_engine = std::make_unique<VulkanComputeEngine>();
-                if (!_impl->vulkan_engine->initialize()) {
+            const char* gpu_env = std::getenv("FLM_ENABLE_GPU");
+            if (!gpu_env) gpu_env = std::getenv("FLM_USE_VULKAN");
+            if (!gpu_env) gpu_env = std::getenv("FLM_GPU");
+            if (gpu_env && (std::string(gpu_env) == "1" || std::string(gpu_env) == "true" || std::string(gpu_env) == "on")) {
+                try {
+                    _impl->vulkan_engine = std::make_unique<VulkanComputeEngine>();
+                    if (!_impl->vulkan_engine->initialize()) {
+                        _impl->vulkan_engine = nullptr;
+                    }
+                } catch (...) {
                     _impl->vulkan_engine = nullptr;
                 }
-            } catch (...) {
-                _impl->vulkan_engine = nullptr;
             }
         }
     }

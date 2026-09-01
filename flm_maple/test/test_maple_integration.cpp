@@ -13,7 +13,16 @@ int main() {
     // 1. Verify Model List & Family resolution
     // -------------------------------------------------------------
     std::string model_dir = utils::get_models_directory();
-    std::string model_list_path = "/home/yoav/slop/maple-flm/FastFlowLM/src/model_list.json";
+    std::string model_list_path = "model_list.json";
+    if (!std::filesystem::exists(model_list_path)) {
+        model_list_path = "FastFlowLM/src/model_list.json";
+    }
+    if (!std::filesystem::exists(model_list_path)) {
+        model_list_path = "../model_list.json";
+    }
+    if (!std::filesystem::exists(model_list_path)) {
+        model_list_path = "src/model_list.json";
+    }
 
     model_list m_list(model_list_path, model_dir);
     assert(m_list.is_model_supported("maple:20b"));
@@ -114,8 +123,15 @@ int main() {
     // -------------------------------------------------------------
     // 6. Test weight loading, forward pass, and benchmarking
     // -------------------------------------------------------------
-    std::string synth_model_dir = "/home/yoav/slop/maple-flm/test_synth_ci";
-    std::string gen_cmd = "python3 /home/yoav/slop/maple-flm/convert_maple.py --generate-synthetic --out-dir " + synth_model_dir;
+    std::string synth_model_dir = "test_synth_ci";
+    std::string convert_script = "convert_maple.py";
+    if (!std::filesystem::exists(convert_script)) {
+        convert_script = "../convert_maple.py";
+    }
+    if (!std::filesystem::exists(convert_script)) {
+        convert_script = "../../convert_maple.py";
+    }
+    std::string gen_cmd = "python3 " + convert_script + " --generate-synthetic --out-dir " + synth_model_dir;
     int ret = std::system(gen_cmd.c_str());
     assert(ret == 0);
 

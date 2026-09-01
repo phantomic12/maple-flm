@@ -38,7 +38,15 @@ int main(int argc, char** argv) {
 
     std::string weight_dir = "test_synth_capabilities";
     if (!std::filesystem::exists(weight_dir + "/model.q4nx")) {
-        std::system("python3 convert_maple.py --generate-synthetic --num-layers 24 --num-experts 16 --out-dir test_synth_capabilities");
+        std::string convert_script = "convert_maple.py";
+        if (!std::filesystem::exists(convert_script)) {
+            convert_script = "../convert_maple.py";
+        }
+        if (!std::filesystem::exists(convert_script)) {
+            convert_script = "../../convert_maple.py";
+        }
+        std::string gen_cmd = "python3 " + convert_script + " --generate-synthetic --num-layers 24 --num-experts 16 --out-dir " + weight_dir;
+        std::system(gen_cmd.c_str());
     }
 
     std::ifstream cfg_file(weight_dir + "/config.json");

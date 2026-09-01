@@ -8,7 +8,11 @@
 #include <iostream>
 #include <fstream>
 #include <cstring>
+#include <cstdlib>
 #include <vector>
+#if defined(__linux__)
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -51,6 +55,17 @@ void VulkanComputeEngine::cleanup() {
 }
 
 bool VulkanComputeEngine::initialize() {
+    // 0. Environment and Headless Safety Guards
+    if (std::getenv("FLM_DISABLE_GPU") || std::getenv("FLM_DISABLE_VULKAN") || std::getenv("CI")) {
+        return false;
+    }
+#if defined(__linux__)
+    if (access("/dev/dri", F_OK) != 0) {
+        return false;
+    }
+    setenv("VK_LOADER_LAYERS_DISABLE", "~all~", 0);
+#endif
+
     // 1. Create Vulkan Instance
     VkApplicationInfo app_info{};
     app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;

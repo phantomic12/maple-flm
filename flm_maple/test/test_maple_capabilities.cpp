@@ -19,7 +19,16 @@ int main() {
     // -------------------------------------------------------------
     std::cout << "\n[TEST 1/5] Verifying Tool Calling & Schema Facets..." << std::endl;
     std::string model_dir = utils::get_models_directory();
-    std::string model_list_path = "/home/yoav/slop/maple-flm/FastFlowLM/src/model_list.json";
+    std::string model_list_path = "model_list.json";
+    if (!std::filesystem::exists(model_list_path)) {
+        model_list_path = "FastFlowLM/src/model_list.json";
+    }
+    if (!std::filesystem::exists(model_list_path)) {
+        model_list_path = "../model_list.json";
+    }
+    if (!std::filesystem::exists(model_list_path)) {
+        model_list_path = "src/model_list.json";
+    }
     model_list m_list(model_list_path, model_dir);
 
     flm_rt::device dummy_dev;
@@ -95,11 +104,19 @@ int main() {
     std::cout << "  [PASS] Initialized maple_npu engine with 131,072 max context" << std::endl;
 
     // Load synthetic/benchmark weights (24 layers, 16 experts)
-    std::string synth_dir = "/home/yoav/slop/maple-flm/test_synth_capabilities";
+    std::string synth_dir = "test_synth_capabilities";
     std::filesystem::create_directories(synth_dir);
     std::string synth_model_path = synth_dir + "/model.q4nx";
     if (!std::filesystem::exists(synth_model_path)) {
-        int gen_ret = std::system("python3 /home/yoav/slop/maple-flm/convert_maple.py --generate-synthetic --num-layers 24 --num-experts 16 --out-dir /home/yoav/slop/maple-flm/test_synth_capabilities");
+        std::string convert_script = "convert_maple.py";
+        if (!std::filesystem::exists(convert_script)) {
+            convert_script = "../convert_maple.py";
+        }
+        if (!std::filesystem::exists(convert_script)) {
+            convert_script = "../../convert_maple.py";
+        }
+        std::string gen_cmd = "python3 " + convert_script + " --generate-synthetic --num-layers 24 --num-experts 16 --out-dir " + synth_dir;
+        int gen_ret = std::system(gen_cmd.c_str());
         assert(gen_ret == 0);
     }
     Q4NX q4nx(synth_dir);

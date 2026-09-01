@@ -9,7 +9,7 @@ if(TARGET flm)
         ${CMAKE_CURRENT_SOURCE_DIR}/common/gpu/vulkan_engine.cpp
     )
     if(NOT WIN32)
-        target_compile_options(flm PRIVATE -mavx -mavx2 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512bf16 -mavx512vnni -mfma -O3)
+        target_compile_options(flm PRIVATE -mavx -mavx2 -mfma -O3)
         target_link_libraries(flm PUBLIC vulkan dl)
     endif()
 endif()
@@ -77,7 +77,7 @@ target_link_libraries(test_maple_integration PUBLIC
     tokenizers_cpp
 )
 if(NOT WIN32)
-    target_compile_options(test_maple_integration PUBLIC -mavx -mavx2 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512bf16 -mavx512vnni -mfma -O3)
+    target_compile_options(test_maple_integration PUBLIC -mavx -mavx2 -mfma -O3)
     if(NOT FLM_PORTABLE_BUILD)
         target_compile_definitions(test_maple_integration PUBLIC FASTFLOWLM_USE_READLINE=1)
         target_link_libraries(test_maple_integration PUBLIC PkgConfig::readline PkgConfig::ncurses)
@@ -150,7 +150,7 @@ target_link_libraries(test_maple_high_context PUBLIC
     tokenizers_cpp
 )
 if(NOT WIN32)
-    target_compile_options(test_maple_high_context PUBLIC -mavx -mavx2 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512bf16 -mavx512vnni -mfma -O3)
+    target_compile_options(test_maple_high_context PUBLIC -mavx -mavx2 -mfma -O3)
     if(NOT FLM_PORTABLE_BUILD)
         target_compile_definitions(test_maple_high_context PUBLIC FASTFLOWLM_USE_READLINE=1)
         target_link_libraries(test_maple_high_context PUBLIC PkgConfig::readline PkgConfig::ncurses)
@@ -223,7 +223,7 @@ target_link_libraries(test_maple_npu_bench PUBLIC
     tokenizers_cpp
 )
 if(NOT WIN32)
-    target_compile_options(test_maple_npu_bench PUBLIC -mavx -mavx2 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512bf16 -mavx512vnni -mfma -O3)
+    target_compile_options(test_maple_npu_bench PUBLIC -mavx -mavx2 -mfma -O3)
     if(NOT FLM_PORTABLE_BUILD)
         target_compile_definitions(test_maple_npu_bench PUBLIC FASTFLOWLM_USE_READLINE=1)
         target_link_libraries(test_maple_npu_bench PUBLIC PkgConfig::readline PkgConfig::ncurses)
@@ -296,7 +296,7 @@ target_link_libraries(test_maple_capabilities PUBLIC
     tokenizers_cpp
 )
 if(NOT WIN32)
-    target_compile_options(test_maple_capabilities PUBLIC -mavx -mavx2 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512bf16 -mavx512vnni -mfma -O3)
+    target_compile_options(test_maple_capabilities PUBLIC -mavx -mavx2 -mfma -O3)
     if(NOT FLM_PORTABLE_BUILD)
         target_compile_definitions(test_maple_capabilities PUBLIC FASTFLOWLM_USE_READLINE=1)
         target_link_libraries(test_maple_capabilities PUBLIC PkgConfig::readline PkgConfig::ncurses)
@@ -369,7 +369,7 @@ target_link_libraries(test_agentic_benchmark PUBLIC
     tokenizers_cpp
 )
 if(NOT WIN32)
-    target_compile_options(test_agentic_benchmark PUBLIC -mavx -mavx2 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512bf16 -mavx512vnni -mfma -O3)
+    target_compile_options(test_agentic_benchmark PUBLIC -mavx -mavx2 -mfma -O3)
     if(NOT FLM_PORTABLE_BUILD)
         target_compile_definitions(test_agentic_benchmark PUBLIC FASTFLOWLM_USE_READLINE=1)
         target_link_libraries(test_agentic_benchmark PUBLIC PkgConfig::readline PkgConfig::ncurses)
@@ -442,7 +442,7 @@ target_link_libraries(test_maple_vs_qwen36 PUBLIC
     tokenizers_cpp
 )
 if(NOT WIN32)
-    target_compile_options(test_maple_vs_qwen36 PUBLIC -mavx -mavx2 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512bf16 -mavx512vnni -mfma -O3)
+    target_compile_options(test_maple_vs_qwen36 PUBLIC -mavx -mavx2 -mfma -O3)
     if(NOT FLM_PORTABLE_BUILD)
         target_compile_definitions(test_maple_vs_qwen36 PUBLIC FASTFLOWLM_USE_READLINE=1)
         target_link_libraries(test_maple_vs_qwen36 PUBLIC PkgConfig::readline PkgConfig::ncurses)

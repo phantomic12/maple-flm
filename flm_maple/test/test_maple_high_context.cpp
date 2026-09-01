@@ -43,8 +43,15 @@ int main() {
     maple_npu engine(high_ctx_cfg, nullptr, max_test_context);
 
     // 2. Generate and load synthetic model weights
-    std::string synth_model_dir = "/home/yoav/slop/maple-flm/test_synth_max_ctx";
-    std::string gen_cmd = "python3 /home/yoav/slop/maple-flm/convert_maple.py --generate-synthetic --num-layers 24 --num-experts 16 --out-dir " + synth_model_dir;
+    std::string synth_model_dir = "test_synth_max_ctx";
+    std::string convert_script = "convert_maple.py";
+    if (!std::filesystem::exists(convert_script)) {
+        convert_script = "../convert_maple.py";
+    }
+    if (!std::filesystem::exists(convert_script)) {
+        convert_script = "../../convert_maple.py";
+    }
+    std::string gen_cmd = "python3 " + convert_script + " --generate-synthetic --num-layers 24 --num-experts 16 --out-dir " + synth_model_dir;
     int ret = std::system(gen_cmd.c_str());
     assert(ret == 0);
 

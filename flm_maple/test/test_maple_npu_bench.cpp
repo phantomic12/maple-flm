@@ -42,7 +42,16 @@ int main(int argc, char* argv[]) {
     bool preemption = vm["preemption"].as<bool>();
 
     std::string model_dir = utils::get_models_directory();
-    std::string model_list_path = "/home/yoav/slop/maple-flm/FastFlowLM/src/model_list.json";
+    std::string model_list_path = "model_list.json";
+    if (!std::filesystem::exists(model_list_path)) {
+        model_list_path = "FastFlowLM/src/model_list.json";
+    }
+    if (!std::filesystem::exists(model_list_path)) {
+        model_list_path = "../model_list.json";
+    }
+    if (!std::filesystem::exists(model_list_path)) {
+        model_list_path = "src/model_list.json";
+    }
     model_list m_list(model_list_path, model_dir);
 
     std::string model_path = custom_model_path.empty() ? m_list.get_model_path(tag) : custom_model_path;
