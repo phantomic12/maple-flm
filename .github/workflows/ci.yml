@@ -101,30 +101,42 @@ jobs:
 
       - name: Publish GitHub Release (Latest Commit & Tags)
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: flm-maple-linux-x86_64.tar.gz
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
-          target_commitish: ${{ github.sha }}
-          name: ${{ startsWith(github.ref, 'refs/tags/') && format('FastFlowLM Maple-20B Release ({0})', github.ref_name) || format('FastFlowLM Maple-20B (latest: {0})', github.sha) }}
-          body: |
-            Automated production build for commit `${{ github.sha }}`.
-            
-            ### Included Binaries:
-            - `flm`: FastFlowLM Runtime CLI & OpenAI-compatible REST server
-            - `convert_maple`: Standalone HuggingFace -> Q4NX checkpoint converter
-            - `test_maple_integration`: Comprehensive unit & integration verification
-            - `test_maple_high_context`: 128K context scaling test
-            - `test_maple_vs_qwen36`: Head-to-head comparative benchmark suite
-            - `test_agentic_benchmark`: 100,000-token ultra-long context agentic benchmark
-            - `install.sh`: One-click system installer
-            
-            ### One-Line Install via curl:
-            ```bash
-            curl -fsSL https://raw.githubusercontent.com/phantomic12/maple-flm/main/install.sh | bash
-            ```
-          draft: false
-          prerelease: false
-          make_latest: true
+        run: |
+          TAG_NAME="latest"
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-8)
+          RELEASE_TITLE="FastFlowLM Maple-20B (latest commit: ${SHORT_SHA})"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG_NAME="${GITHUB_REF_NAME}"
+            RELEASE_TITLE="FastFlowLM Maple-20B Release (${GITHUB_REF_NAME})"
+          fi
+
+          echo "Publishing release with tag '${TAG_NAME}' (${RELEASE_TITLE})..."
+          gh release delete "${TAG_NAME}" --yes || true
+          git tag -f "${TAG_NAME}" "${GITHUB_SHA}"
+          git push -f origin "${TAG_NAME}" || true
+
+          BODY=$(cat <<EOF
+          Automated production release for commit \`${GITHUB_SHA}\`.
+
+          ### Included Binaries:
+          - \`flm\`: FastFlowLM Runtime CLI & OpenAI-compatible REST server
+          - \`convert_maple\`: Standalone HuggingFace -> Q4NX checkpoint converter
+          - \`test_maple_integration\`: Comprehensive unit & integration verification
+          - \`test_maple_high_context\`: 128K context scaling test
+          - \`test_maple_vs_qwen36\`: Head-to-head comparative benchmark suite
+          - \`test_agentic_benchmark\`: 100,000-token ultra-long context agentic benchmark
+          - \`install.sh\`: One-click system installer
+
+          ### One-Line Install via curl:
+          \`\`\`bash
+          curl -fsSL https://raw.githubusercontent.com/phantomic12/maple-flm/main/install.sh | bash
+          \`\`\`
+          EOF
+          )
+
+          gh release create "${TAG_NAME}" flm-maple-linux-x86_64.tar.gz \
+            --title "${RELEASE_TITLE}" \
+            --notes "${BODY}" \
+            --latest
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
