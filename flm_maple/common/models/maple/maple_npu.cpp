@@ -858,10 +858,6 @@ struct maple_npu::Impl {
     std::vector<std::string> layer_types;
     std::vector<bool> is_sliding_layer;
 
-    // NPU Hardware modules
-    std::unique_ptr<LMHead> npu_lm_head;
-    std::unique_ptr<Embedding> npu_embedding;
-
     // Weights
     buffer<bf16> word_embeddings; // (vocab_size, hidden_size)
     buffer<bf16> final_norm;      // (hidden_size)
@@ -977,20 +973,6 @@ struct maple_npu::Impl {
             layers[l].experts.resize(num_experts);
         }
 
-        // Initialize NPU Hardware LM Head and Embedding if NPU is present
-        if (npu != nullptr) {
-            try {
-                npu_lm_head = std::make_unique<LMHead>(config, npu);
-            } catch (...) {
-                npu_lm_head = nullptr;
-            }
-            try {
-                npu_embedding = std::make_unique<Embedding>(vocab_size, hidden_size);
-            } catch (...) {
-                npu_embedding = nullptr;
-            }
-        }
-
         // Pre-allocate zero-copy reusable workspaces
         ws_h.resize(hidden_size);
         ws_norm_h.resize(hidden_size);
@@ -1071,11 +1053,8 @@ struct maple_npu::Impl {
     }
 
     void forward_token(int token_id, int pos, float* hidden_out, bool compute_logits = true) {
-        // 1. Embedding lookup (Direct DMA or fast lookup)
-        const bf16* emb_ptr = (npu_embedding && npu_embedding->w.size() > 0) ? 
-            (npu_embedding->w.begin() + static_cast<size_t>(token_id) * hidden_size) : 
-            (word_embeddings.begin() + static_cast<size_t>(token_id) * hidden_size);
-
+        // 1. Embedding lookup
+        const bf16* emb_ptr = word_embeddings.begin() + static_cast<size_t>(token_id) * hidden_size;
         for (size_t i = 0; i < hidden_size; ++i) {
             ws_h[i] = static_cast<float>(emb_ptr[i]);
         }
@@ -1309,22 +1288,13 @@ struct maple_npu::Impl {
             std::memcpy(hidden_out, ws_h.data(), hidden_size * sizeof(float));
         }
 
-        // 4. LM Head Projection to Vocab (Hardware NPU Offload)
+        // 4. LM Head Projection to Vocab
         if (compute_logits) {
-            if (npu_lm_head) {
-                buffer<bf16> exposed = npu_lm_head->x_exposed();
-                for (size_t i = 0; i < hidden_size && i < exposed.size(); ++i) {
-                    exposed[i] = static_cast<bf16>(ws_h[i]);
-                }
-                npu_lm_head->execute();
-                output_logits = npu_lm_head->wait();
-            } else {
-                std::vector<float> logits_f32(vocab_size);
-                matvec_dot_bf16(ws_h.data(), lm_head.begin(), logits_f32.data(), hidden_size, vocab_size);
+            std::vector<float> logits_f32(vocab_size);
+            matvec_dot_bf16(ws_h.data(), lm_head.begin(), logits_f32.data(), hidden_size, vocab_size);
 
-                for (size_t v_i = 0; v_i < vocab_size; ++v_i) {
-                    output_logits[v_i] = static_cast<bf16>(logits_f32[v_i]);
-                }
+            for (size_t v_i = 0; v_i < vocab_size; ++v_i) {
+                output_logits[v_i] = static_cast<bf16>(logits_f32[v_i]);
             }
         }
     }
@@ -1339,9 +1309,7 @@ struct maple_npu::Impl {
 #pragma omp parallel for collapse(2) schedule(static)
         for (int64_t b = 0; b < static_cast<int64_t>(B); ++b) {
             for (int64_t h_i = 0; h_i < static_cast<int64_t>(hidden_size); ++h_i) {
-                const bf16* emb_ptr = (npu_embedding && npu_embedding->w.size() > 0) ?
-                    (npu_embedding->w.begin() + static_cast<size_t>(token_ids[b]) * hidden_size) :
-                    (word_embeddings.begin() + static_cast<size_t>(token_ids[b]) * hidden_size);
+                const bf16* emb_ptr = word_embeddings.begin() + static_cast<size_t>(token_ids[b]) * hidden_size;
                 batch_h[b * hidden_size + h_i] = static_cast<float>(emb_ptr[h_i]);
             }
         }
@@ -1797,19 +1765,10 @@ struct maple_npu::Impl {
             }
             rms_norm_inplace(ws_h.data(), final_norm.begin(), hidden_size, rms_norm_eps);
 
-            if (npu_lm_head) {
-                buffer<bf16> exposed = npu_lm_head->x_exposed();
-                for (size_t i = 0; i < hidden_size && i < exposed.size(); ++i) {
-                    exposed[i] = static_cast<bf16>(ws_h[i]);
-                }
-                npu_lm_head->execute();
-                output_logits = npu_lm_head->wait();
-            } else {
-                std::vector<float> logits_f32(vocab_size);
-                matvec_dot_bf16(ws_h.data(), lm_head.begin(), logits_f32.data(), hidden_size, vocab_size);
-                for (size_t v_i = 0; v_i < vocab_size; ++v_i) {
-                    output_logits[v_i] = static_cast<bf16>(logits_f32[v_i]);
-                }
+            std::vector<float> logits_f32(vocab_size);
+            matvec_dot_bf16(ws_h.data(), lm_head.begin(), logits_f32.data(), hidden_size, vocab_size);
+            for (size_t v_i = 0; v_i < vocab_size; ++v_i) {
+                output_logits[v_i] = static_cast<bf16>(logits_f32[v_i]);
             }
         }
     }
@@ -1860,16 +1819,7 @@ void maple_npu::set_context_length(int L) {
 void maple_npu::load_weights(Q4NX& q4nx) {
     q4nx.load_weights(_impl->word_embeddings, "model.word_embeddings");
     q4nx.load_weights(_impl->final_norm, "model.norm");
-
-    if (_impl->npu_embedding) {
-        _impl->npu_embedding->w = _impl->word_embeddings;
-    }
-
-    if (_impl->npu_lm_head) {
-        _impl->npu_lm_head->load_weights(q4nx);
-    } else {
-        q4nx.load_weights(_impl->lm_head, "lm_head");
-    }
+    q4nx.load_weights(_impl->lm_head, "lm_head");
 
     for (size_t l = 0; l < _impl->num_layers; ++l) {
         std::string layer_prefix = "model.layers." + std::to_string(l);

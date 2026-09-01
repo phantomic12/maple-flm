@@ -23,17 +23,12 @@ set(MAPLE_STANDALONE_SRCS
     common/modules/sampler.cpp
     common/tokenizer/tokenizer.cpp
     common/gpu/vulkan_engine.cpp
+    common/tensor_utils/safetensors_reader.cpp
     pull/model_downloader.cpp
     pull/download_model.cpp
 )
 
 set(MAPLE_BASE_LIBS
-    q4_npu_eXpress
-    lm_head
-    gemm
-    dequant
-    mha
-    xrt_coreutil
     Boost::program_options
     CURL::libcurl
     PkgConfig::FFTW3
