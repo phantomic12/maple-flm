@@ -97,13 +97,51 @@ if [ ${DRY_RUN} -eq 1 ]; then
 fi
 
 # 2. Determine Installation Source (Pre-built Binaries vs Source Build)
-mkdir -p "${PREFIX}/bin" "${PREFIX}/share/flm" "${PREFIX}/share/fastflowlm"
+mkdir -p "${PREFIX}/bin" "${PREFIX}/lib/fastflowlm" "${PREFIX}/share/flm" "${PREFIX}/share/fastflowlm"
 
-INSTALL_BINS=("flm" "test_maple_integration" "test_maple_high_context" "test_agentic_benchmark" "test_maple_vs_qwen36")
+INSTALL_BINS=("flm" "flm.real" "test_maple_integration" "test_maple_high_context" "test_agentic_benchmark" "test_maple_vs_qwen36")
 INSTALLED_FROM=""
 
+# Helper to create/install flm wrapper
+install_flm_wrapper() {
+    local target_bin_dir="$1"
+    cat <<'WRAPPER_EOF' > "${target_bin_dir}/flm"
+#!/usr/bin/env bash
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export LD_LIBRARY_PATH="${SELF_DIR}:${SELF_DIR}/../lib:${SELF_DIR}/../lib/fastflowlm:${SELF_DIR}/../lib/xrt:${LD_LIBRARY_PATH:-}"
+
+if [ -z "${FLM_CONFIG_PATH:-}" ]; then
+    if [ -f "${SELF_DIR}/model_list.json" ]; then
+        export FLM_CONFIG_PATH="${SELF_DIR}/model_list.json"
+    elif [ -f "${SELF_DIR}/../share/flm/model_list.json" ]; then
+        export FLM_CONFIG_PATH="${SELF_DIR}/../share/flm/model_list.json"
+    elif [ -f "${SELF_DIR}/../share/fastflowlm/model_list.json" ]; then
+        export FLM_CONFIG_PATH="${SELF_DIR}/../share/fastflowlm/model_list.json"
+    fi
+fi
+
+if [ -z "${FLM_XCLBIN_PATH:-}" ]; then
+    if [ -d "${SELF_DIR}/xclbins" ]; then
+        export FLM_XCLBIN_PATH="${SELF_DIR}/xclbins"
+    elif [ -d "${SELF_DIR}/../share/fastflowlm/xclbins" ]; then
+        export FLM_XCLBIN_PATH="${SELF_DIR}/../share/fastflowlm/xclbins"
+    fi
+fi
+
+if [ -f "${SELF_DIR}/flm.real" ]; then
+    exec "${SELF_DIR}/flm.real" "$@"
+elif [ -f "${SELF_DIR}/flm.bin" ]; then
+    exec "${SELF_DIR}/flm.bin" "$@"
+else
+    echo "[ERROR] flm binary executable not found in ${SELF_DIR}" >&2
+    exit 1
+fi
+WRAPPER_EOF
+    chmod +x "${target_bin_dir}/flm"
+}
+
 # Case A: Local pre-built directory or extracted archive
-if [ ${FORCE_BUILD} -eq 0 ] && [ -f "bin/flm" ]; then
+if [ ${FORCE_BUILD} -eq 0 ] && [ -f "bin/flm" ] || [ -f "bin/flm.real" ]; then
     echo -e "\n${CYAN}--> 2. Installing from local pre-compiled package...${NC}"
     for bin in "${INSTALL_BINS[@]}"; do
         if [ -f "bin/${bin}" ]; then
@@ -118,7 +156,14 @@ if [ ${FORCE_BUILD} -eq 0 ] && [ -f "bin/flm" ]; then
         cp -vf "convert_maple.py" "${PREFIX}/bin/convert_maple"
         chmod +x "${PREFIX}/bin/convert_maple"
     fi
-    for dir in share/flm share/fastflowlm .; do
+    if [ -d "lib" ]; then
+        cp -vrf lib/* "${PREFIX}/lib/fastflowlm/" 2>/dev/null || true
+    fi
+    if [ -d "share/fastflowlm/xclbins" ]; then
+        mkdir -p "${PREFIX}/share/fastflowlm/xclbins"
+        cp -rn share/fastflowlm/xclbins/* "${PREFIX}/share/fastflowlm/xclbins/" 2>/dev/null || true
+    fi
+    for dir in share/flm share/fastflowlm bin .; do
         if [ -f "${dir}/model_list.json" ]; then
             cp -vf "${dir}/model_list.json" "${PREFIX}/bin/"
             cp -vf "${dir}/model_list.json" "${PREFIX}/share/flm/"
@@ -126,7 +171,7 @@ if [ ${FORCE_BUILD} -eq 0 ] && [ -f "bin/flm" ]; then
             break
         fi
     done
-    for dir in share/flm share/fastflowlm .; do
+    for dir in share/flm share/fastflowlm bin .; do
         if [ -f "${dir}/model_info.json" ]; then
             cp -vf "${dir}/model_info.json" "${PREFIX}/bin/"
             cp -vf "${dir}/model_info.json" "${PREFIX}/share/flm/"
@@ -134,12 +179,15 @@ if [ ${FORCE_BUILD} -eq 0 ] && [ -f "bin/flm" ]; then
             break
         fi
     done
+    install_flm_wrapper "${PREFIX}/bin"
     INSTALLED_FROM="local package"
 
 # Case B: Local build directory (e.g. inside repo after ninja build)
 elif [ ${FORCE_BUILD} -eq 0 ] && [ -f "FastFlowLM/src/build/flm" ]; then
     echo -e "\n${CYAN}--> 2. Installing from FastFlowLM build directory...${NC}"
-    for bin in "${INSTALL_BINS[@]}"; do
+    cp -vf "FastFlowLM/src/build/flm" "${PREFIX}/bin/flm.real"
+    chmod +x "${PREFIX}/bin/flm.real"
+    for bin in test_maple_integration test_maple_high_context test_agentic_benchmark test_maple_vs_qwen36; do
         if [ -f "FastFlowLM/src/build/${bin}" ]; then
             cp -vf "FastFlowLM/src/build/${bin}" "${PREFIX}/bin/"
             chmod +x "${PREFIX}/bin/${bin}"
@@ -148,6 +196,13 @@ elif [ ${FORCE_BUILD} -eq 0 ] && [ -f "FastFlowLM/src/build/flm" ]; then
     if [ -f "convert_maple.py" ]; then
         cp -vf "convert_maple.py" "${PREFIX}/bin/convert_maple"
         chmod +x "${PREFIX}/bin/convert_maple"
+    fi
+    if [ -d "FastFlowLM/src/lib/xrt" ]; then
+        cp -vrf FastFlowLM/src/lib/xrt/* "${PREFIX}/lib/fastflowlm/" 2>/dev/null || true
+    fi
+    if [ -d "FastFlowLM/src/xclbins" ]; then
+        mkdir -p "${PREFIX}/share/fastflowlm/xclbins"
+        cp -rn FastFlowLM/src/xclbins/* "${PREFIX}/share/fastflowlm/xclbins/" 2>/dev/null || true
     fi
     if [ -f "FastFlowLM/src/model_list.json" ]; then
         cp -vf "FastFlowLM/src/model_list.json" "${PREFIX}/bin/"
@@ -159,6 +214,7 @@ elif [ ${FORCE_BUILD} -eq 0 ] && [ -f "FastFlowLM/src/build/flm" ]; then
         cp -vf "FastFlowLM/src/model_info.json" "${PREFIX}/share/flm/"
         cp -vf "FastFlowLM/src/model_info.json" "${PREFIX}/share/fastflowlm/"
     fi
+    install_flm_wrapper "${PREFIX}/bin"
     INSTALLED_FROM="local build"
 
 # Case C: Download latest release binary from GitHub Releases
@@ -189,6 +245,13 @@ elif [ ${FORCE_BUILD} -eq 0 ]; then
             cp -vf "${PKG_ROOT}/bin/convert_maple" "${PREFIX}/bin/"
             chmod +x "${PREFIX}/bin/convert_maple"
         fi
+        if [ -d "${PKG_ROOT}/lib" ]; then
+            cp -vrf "${PKG_ROOT}/lib/"* "${PREFIX}/lib/fastflowlm/" 2>/dev/null || true
+        fi
+        if [ -d "${PKG_ROOT}/share/fastflowlm/xclbins" ]; then
+            mkdir -p "${PREFIX}/share/fastflowlm/xclbins"
+            cp -rn "${PKG_ROOT}/share/fastflowlm/xclbins/"* "${PREFIX}/share/fastflowlm/xclbins/" 2>/dev/null || true
+        fi
         for mf in model_list.json model_info.json; do
             for loc in "${PKG_ROOT}/bin" "${PKG_ROOT}/share" "${PKG_ROOT}/share/flm" "${PKG_ROOT}/share/fastflowlm" "${PKG_ROOT}"; do
                 if [ -f "${loc}/${mf}" ]; then
@@ -199,6 +262,7 @@ elif [ ${FORCE_BUILD} -eq 0 ]; then
                 fi
             done
         done
+        install_flm_wrapper "${PREFIX}/bin"
         INSTALLED_FROM="GitHub Releases (${RELEASE_TAG})"
     else
         echo -e "${YELLOW}[!] Pre-compiled release asset not reachable, falling back to source build...${NC}"
@@ -221,7 +285,9 @@ if [ ${FORCE_BUILD} -eq 1 ]; then
     bash scripts/build.sh
     ninja -C FastFlowLM/src/build test_maple_vs_qwen36 test_agentic_benchmark
 
-    for bin in "${INSTALL_BINS[@]}"; do
+    cp -vf "FastFlowLM/src/build/flm" "${PREFIX}/bin/flm.real"
+    chmod +x "${PREFIX}/bin/flm.real"
+    for bin in test_maple_integration test_maple_high_context test_agentic_benchmark test_maple_vs_qwen36; do
         if [ -f "FastFlowLM/src/build/${bin}" ]; then
             cp -vf "FastFlowLM/src/build/${bin}" "${PREFIX}/bin/"
             chmod +x "${PREFIX}/bin/${bin}"
@@ -230,6 +296,13 @@ if [ ${FORCE_BUILD} -eq 1 ]; then
     if [ -f "convert_maple.py" ]; then
         cp -vf "convert_maple.py" "${PREFIX}/bin/convert_maple"
         chmod +x "${PREFIX}/bin/convert_maple"
+    fi
+    if [ -d "FastFlowLM/src/lib/xrt" ]; then
+        cp -vrf FastFlowLM/src/lib/xrt/* "${PREFIX}/lib/fastflowlm/" 2>/dev/null || true
+    fi
+    if [ -d "FastFlowLM/src/xclbins" ]; then
+        mkdir -p "${PREFIX}/share/fastflowlm/xclbins"
+        cp -rn FastFlowLM/src/xclbins/* "${PREFIX}/share/fastflowlm/xclbins/" 2>/dev/null || true
     fi
     if [ -f "FastFlowLM/src/model_list.json" ]; then
         cp -vf "FastFlowLM/src/model_list.json" "${PREFIX}/bin/"
@@ -241,6 +314,7 @@ if [ ${FORCE_BUILD} -eq 1 ]; then
         cp -vf "FastFlowLM/src/model_info.json" "${PREFIX}/share/flm/"
         cp -vf "FastFlowLM/src/model_info.json" "${PREFIX}/share/fastflowlm/"
     fi
+    install_flm_wrapper "${PREFIX}/bin"
     INSTALLED_FROM="source compilation"
 fi
 

@@ -69,15 +69,56 @@ jobs:
         id: package
         run: |
           PACKAGE_DIR="flm-maple-linux-x86_64"
-          mkdir -p "${PACKAGE_DIR}/bin" "${PACKAGE_DIR}/share/flm" "${PACKAGE_DIR}/share/fastflowlm"
+          mkdir -p "${PACKAGE_DIR}/bin" "${PACKAGE_DIR}/lib" "${PACKAGE_DIR}/share/flm" "${PACKAGE_DIR}/share/fastflowlm/xclbins"
           
-          cp -v FastFlowLM/src/build/flm "${PACKAGE_DIR}/bin/"
+          # 1. Executables
+          cp -v FastFlowLM/src/build/flm "${PACKAGE_DIR}/bin/flm.real"
           cp -v FastFlowLM/src/build/test_maple_integration "${PACKAGE_DIR}/bin/"
           cp -v FastFlowLM/src/build/test_maple_high_context "${PACKAGE_DIR}/bin/"
           cp -v FastFlowLM/src/build/test_agentic_benchmark "${PACKAGE_DIR}/bin/"
           cp -v FastFlowLM/src/build/test_maple_vs_qwen36 "${PACKAGE_DIR}/bin/"
           cp -v convert_maple.py "${PACKAGE_DIR}/bin/convert_maple"
           chmod +x "${PACKAGE_DIR}/bin/"*
+          
+          # 2. flm CLI launcher wrapper
+          cat <<'WRAPPER_EOF' > "${PACKAGE_DIR}/bin/flm"
+          #!/usr/bin/env bash
+          SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export LD_LIBRARY_PATH="${SELF_DIR}:${SELF_DIR}/../lib:${SELF_DIR}/../lib/fastflowlm:${SELF_DIR}/../lib/xrt:${LD_LIBRARY_PATH:-}"
+
+          if [ -z "${FLM_CONFIG_PATH:-}" ]; then
+              if [ -f "${SELF_DIR}/model_list.json" ]; then
+                  export FLM_CONFIG_PATH="${SELF_DIR}/model_list.json"
+              elif [ -f "${SELF_DIR}/../share/flm/model_list.json" ]; then
+                  export FLM_CONFIG_PATH="${SELF_DIR}/../share/flm/model_list.json"
+              elif [ -f "${SELF_DIR}/../share/fastflowlm/model_list.json" ]; then
+                  export FLM_CONFIG_PATH="${SELF_DIR}/../share/fastflowlm/model_list.json"
+              fi
+          fi
+
+          if [ -z "${FLM_XCLBIN_PATH:-}" ]; then
+              if [ -d "${SELF_DIR}/xclbins" ]; then
+                  export FLM_XCLBIN_PATH="${SELF_DIR}/xclbins"
+              elif [ -d "${SELF_DIR}/../share/fastflowlm/xclbins" ]; then
+                  export FLM_XCLBIN_PATH="${SELF_DIR}/../share/fastflowlm/xclbins"
+              fi
+          fi
+
+          exec "${SELF_DIR}/flm.real" "$@"
+          WRAPPER_EOF
+          chmod +x "${PACKAGE_DIR}/bin/flm"
+
+          # 3. Dynamic Shared Libraries
+          if [ -d "FastFlowLM/src/lib/xrt" ]; then
+              cp -vrf FastFlowLM/src/lib/xrt/* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          fi
+
+          # 4. Bitstreams and Configs
+          if [ -d "FastFlowLM/src/xclbins" ]; then
+              cp -rn FastFlowLM/src/xclbins/* "${PACKAGE_DIR}/share/fastflowlm/xclbins/" 2>/dev/null || true
+              mkdir -p "${PACKAGE_DIR}/bin/xclbins"
+              cp -rn FastFlowLM/src/xclbins/* "${PACKAGE_DIR}/bin/xclbins/" 2>/dev/null || true
+          fi
           
           cp -v FastFlowLM/src/model_list.json "${PACKAGE_DIR}/bin/"
           cp -v FastFlowLM/src/model_info.json "${PACKAGE_DIR}/bin/"
