@@ -22,3 +22,7 @@ Enable seamless local inference of DeepGrove's **Maple-Preview** 20B reasoning M
 - [x] Checkpoint converter utility in `convert_maple.py`
 - [x] CMakeLists build integration and integration tests in `test_maple_integration.cpp`
 - [x] Automated test runner in `scripts/test_maple.sh`
+- [x] 100K Agentic Ultra-Long Context Scaling Benchmark (`test_agentic_benchmark.cpp`)
+- [x] Head-to-Head Comparative Benchmark Suite against Qwen3.6 MoE (`test_maple_vs_qwen36.cpp`)
+- [x] Production GitHub Actions CI/CD Autobuilder with automated releases (`.github/workflows/ci.yml`)
+- [x] One-line universal installer script (`install.sh`) supporting pre-compiled release downloads via curl
