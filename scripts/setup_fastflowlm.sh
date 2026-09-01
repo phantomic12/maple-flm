@@ -69,15 +69,24 @@ if model_info_path.exists():
     with open(model_info_path, "w") as f:
         json.dump(mi, f, indent=4)
 
-# 3. Patch CMakeLists.txt with Maple test and benchmark targets
+# 3. Patch CMakeLists.txt with Maple test and benchmark targets & universal AVX2 flags
 cm_path = Path("src/CMakeLists.txt")
 targets_cmake_path = Path("../flm_maple/cmake/maple_targets.cmake")
-if cm_path.exists() and targets_cmake_path.exists():
+if cm_path.exists():
     cm_content = cm_path.read_text()
-    if "test_maple_integration" not in cm_content:
+    cm_content = cm_content.replace(
+        '"-mavx512f;-mavx512dq;-mavx512vl;-mavx512bw;-mfma"',
+        '"-mavx;-mavx2;-mfma"'
+    )
+    cm_content = cm_content.replace(
+        '-mavx -mavx2 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512bf16 -mavx512vnni -mfma -O3',
+        '-mavx -mavx2 -mfma -O3'
+    )
+    if "test_maple_integration" not in cm_content and targets_cmake_path.exists():
         targets_cmake = targets_cmake_path.read_text()
-        cm_path.write_text(cm_content + "\n\n" + targets_cmake)
+        cm_content = cm_content + "\n\n" + targets_cmake
         print("[OK] CMake targets injected into CMakeLists.txt")
+    cm_path.write_text(cm_content)
 
 # 4. Patch all_models.hpp
 am_path = Path("src/include/AutoModel/all_models.hpp")
