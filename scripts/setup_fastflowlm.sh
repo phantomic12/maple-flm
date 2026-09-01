@@ -75,10 +75,6 @@ targets_cmake_path = Path("../flm_maple/cmake/maple_targets.cmake")
 if cm_path.exists():
     cm_content = cm_path.read_text()
     cm_content = cm_content.replace(
-        '"-mavx512f;-mavx512dq;-mavx512vl;-mavx512bw;-mfma"',
-        '"-mavx;-mavx2;-mfma"'
-    )
-    cm_content = cm_content.replace(
         '-mavx -mavx2 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512bf16 -mavx512vnni -mfma -O3',
         '-mavx -mavx2 -mfma -O3'
     )
