@@ -141,7 +141,7 @@ WRAPPER_EOF
 }
 
 # Case A: Local pre-built directory or extracted archive
-if [ ${FORCE_BUILD} -eq 0 ] && [ -f "bin/flm" ] || [ -f "bin/flm.real" ]; then
+if [ ${FORCE_BUILD} -eq 0 ] && { [ -f "bin/flm" ] || [ -f "bin/flm.real" ]; }; then
     echo -e "\n${CYAN}--> 2. Installing from local pre-compiled package...${NC}"
     for bin in "${INSTALL_BINS[@]}"; do
         if [ -f "bin/${bin}" ]; then
@@ -158,6 +158,8 @@ if [ ${FORCE_BUILD} -eq 0 ] && [ -f "bin/flm" ] || [ -f "bin/flm.real" ]; then
     fi
     if [ -d "lib" ]; then
         cp -vrf lib/* "${PREFIX}/lib/fastflowlm/" 2>/dev/null || true
+        cp -vrf lib/* "${PREFIX}/lib/" 2>/dev/null || true
+        cp -vrf lib/* "${PREFIX}/bin/" 2>/dev/null || true
     fi
     if [ -d "share/fastflowlm/xclbins" ]; then
         mkdir -p "${PREFIX}/share/fastflowlm/xclbins"
@@ -247,6 +249,8 @@ elif [ ${FORCE_BUILD} -eq 0 ]; then
         fi
         if [ -d "${PKG_ROOT}/lib" ]; then
             cp -vrf "${PKG_ROOT}/lib/"* "${PREFIX}/lib/fastflowlm/" 2>/dev/null || true
+            cp -vrf "${PKG_ROOT}/lib/"* "${PREFIX}/lib/" 2>/dev/null || true
+            cp -vrf "${PKG_ROOT}/lib/"* "${PREFIX}/bin/" 2>/dev/null || true
         fi
         if [ -d "${PKG_ROOT}/share/fastflowlm/xclbins" ]; then
             mkdir -p "${PREFIX}/share/fastflowlm/xclbins"
