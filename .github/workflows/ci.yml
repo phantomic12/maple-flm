@@ -112,11 +112,17 @@ jobs:
           if [ -d "FastFlowLM/src/lib/xrt" ]; then
               cp -vrf FastFlowLM/src/lib/xrt/* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
           fi
-          cp -P /usr/lib/x86_64-linux-gnu/libavformat*.so* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
-          cp -P /usr/lib/x86_64-linux-gnu/libavcodec*.so* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
-          cp -P /usr/lib/x86_64-linux-gnu/libavutil*.so* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
-          cp -P /usr/lib/x86_64-linux-gnu/libswscale*.so* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
-          cp -P /usr/lib/x86_64-linux-gnu/libswresample*.so* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          cp -a /usr/lib/x86_64-linux-gnu/libavformat* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          cp -a /usr/lib/x86_64-linux-gnu/libavcodec* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          cp -a /usr/lib/x86_64-linux-gnu/libavutil* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          cp -a /usr/lib/x86_64-linux-gnu/libswscale* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          cp -a /usr/lib/x86_64-linux-gnu/libswresample* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          cp -a /usr/lib/x86_64-linux-gnu/libboost_program_options* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          cp -a /usr/lib/x86_64-linux-gnu/libboost_container* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          cp -a /usr/lib/x86_64-linux-gnu/libfftw3* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          cp -a /usr/lib/x86_64-linux-gnu/libreadline* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          cp -a /usr/lib/x86_64-linux-gnu/libncurses* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
+          cp -a /usr/lib/x86_64-linux-gnu/libtinfo* "${PACKAGE_DIR}/lib/" 2>/dev/null || true
 
           # 4. Bitstreams and Configs
           if [ -d "FastFlowLM/src/xclbins" ]; then
