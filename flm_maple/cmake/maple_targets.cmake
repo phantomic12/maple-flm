@@ -4,7 +4,10 @@
 
 # Add Maple engine sources and flags to the main flm CLI target
 if(TARGET flm)
-    target_sources(flm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/common/models/maple/maple_npu.cpp)
+    target_sources(flm PRIVATE 
+        ${CMAKE_CURRENT_SOURCE_DIR}/common/models/maple/maple_npu.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/common/gpu/vulkan_engine.cpp
+    )
     if(NOT WIN32)
         target_compile_options(flm PRIVATE -mavx -mavx2 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512bf16 -mavx512vnni -mfma -O3)
         target_link_libraries(flm PUBLIC vulkan dl)
@@ -12,7 +15,7 @@ if(TARGET flm)
 endif()
 
 # Maple integration test
-set(TEST_MAPLE_SRCS ${SOURCES} common/models/maple/maple_npu.cpp test/test_maple_integration.cpp)
+set(TEST_MAPLE_SRCS ${SOURCES} common/models/maple/maple_npu.cpp common/gpu/vulkan_engine.cpp test/test_maple_integration.cpp)
 list(FILTER TEST_MAPLE_SRCS EXCLUDE REGEX ".*/src/main\\.cpp$")
 add_executable(test_maple_integration ${TEST_MAPLE_SRCS} ${HEADERS})
 target_include_directories(test_maple_integration PUBLIC
@@ -85,7 +88,7 @@ if(NOT WIN32)
 endif()
 
 # Maple high-context test
-set(TEST_MAPLE_HIGH_CTX_SRCS ${SOURCES} common/models/maple/maple_npu.cpp test/test_maple_high_context.cpp)
+set(TEST_MAPLE_HIGH_CTX_SRCS ${SOURCES} common/models/maple/maple_npu.cpp common/gpu/vulkan_engine.cpp test/test_maple_high_context.cpp)
 list(FILTER TEST_MAPLE_HIGH_CTX_SRCS EXCLUDE REGEX ".*/src/main\\.cpp$")
 add_executable(test_maple_high_context ${TEST_MAPLE_HIGH_CTX_SRCS} ${HEADERS})
 target_include_directories(test_maple_high_context PUBLIC
@@ -158,7 +161,7 @@ if(NOT WIN32)
 endif()
 
 # Maple NPU Benchmark suite
-set(TEST_MAPLE_NPU_BENCH_SRCS ${SOURCES} common/models/maple/maple_npu.cpp test/test_maple_npu_bench.cpp)
+set(TEST_MAPLE_NPU_BENCH_SRCS ${SOURCES} common/models/maple/maple_npu.cpp common/gpu/vulkan_engine.cpp test/test_maple_npu_bench.cpp)
 list(FILTER TEST_MAPLE_NPU_BENCH_SRCS EXCLUDE REGEX ".*/src/main\\.cpp$")
 add_executable(test_maple_npu_bench ${TEST_MAPLE_NPU_BENCH_SRCS} ${HEADERS})
 target_include_directories(test_maple_npu_bench PUBLIC
@@ -231,7 +234,7 @@ if(NOT WIN32)
 endif()
 
 # Maple Capabilities & Benchmark Suite
-set(TEST_MAPLE_CAPABILITIES_SRCS ${SOURCES} common/models/maple/maple_npu.cpp test/test_maple_capabilities.cpp)
+set(TEST_MAPLE_CAPABILITIES_SRCS ${SOURCES} common/models/maple/maple_npu.cpp common/gpu/vulkan_engine.cpp test/test_maple_capabilities.cpp)
 list(FILTER TEST_MAPLE_CAPABILITIES_SRCS EXCLUDE REGEX ".*/src/main\\.cpp$")
 add_executable(test_maple_capabilities ${TEST_MAPLE_CAPABILITIES_SRCS} ${HEADERS})
 target_include_directories(test_maple_capabilities PUBLIC
@@ -304,7 +307,7 @@ if(NOT WIN32)
 endif()
 
 # Maple Agentic & High-Context Benchmark Suite
-set(TEST_AGENTIC_BENCH_SRCS ${SOURCES} common/models/maple/maple_npu.cpp test/test_agentic_benchmark.cpp)
+set(TEST_AGENTIC_BENCH_SRCS ${SOURCES} common/models/maple/maple_npu.cpp common/gpu/vulkan_engine.cpp test/test_agentic_benchmark.cpp)
 list(FILTER TEST_AGENTIC_BENCH_SRCS EXCLUDE REGEX ".*/src/main\\.cpp$")
 add_executable(test_agentic_benchmark ${TEST_AGENTIC_BENCH_SRCS} ${HEADERS})
 target_include_directories(test_agentic_benchmark PUBLIC
@@ -377,7 +380,7 @@ if(NOT WIN32)
 endif()
 
 # Maple-20B vs Qwen3.6 MoE Comparative Benchmark Suite
-set(TEST_MAPLE_VS_QWEN36_SRCS ${SOURCES} common/models/maple/maple_npu.cpp test/test_maple_vs_qwen36.cpp)
+set(TEST_MAPLE_VS_QWEN36_SRCS ${SOURCES} common/models/maple/maple_npu.cpp common/gpu/vulkan_engine.cpp test/test_maple_vs_qwen36.cpp)
 list(FILTER TEST_MAPLE_VS_QWEN36_SRCS EXCLUDE REGEX ".*/src/main\\.cpp$")
 add_executable(test_maple_vs_qwen36 ${TEST_MAPLE_VS_QWEN36_SRCS} ${HEADERS})
 target_include_directories(test_maple_vs_qwen36 PUBLIC

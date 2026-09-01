@@ -17,12 +17,10 @@ echo "Updating submodules..."
 git submodule update --init --recursive
 
 echo "Copying Maple port files into FastFlowLM source tree..."
-mkdir -p src/include/models/maple src/common/models/maple src/test
+mkdir -p src/include/models/maple src/include/gpu src/common/models/maple src/common/gpu src/test
 
-cp -v "${ROOT_DIR}/flm_maple/include/AutoModel/modeling_maple.hpp" src/include/AutoModel/
-cp -v "${ROOT_DIR}/flm_maple/include/models/maple/maple_npu.hpp" src/include/models/maple/
-cp -v "${ROOT_DIR}/flm_maple/common/AutoModel/modeling_maple.cpp" src/common/AutoModel/
-cp -v "${ROOT_DIR}/flm_maple/common/models/maple/maple_npu.cpp" src/common/models/maple/
+cp -rv "${ROOT_DIR}/flm_maple/include/"* src/include/
+cp -rv "${ROOT_DIR}/flm_maple/common/"* src/common/
 cp -v "${ROOT_DIR}/flm_maple/test/"*.cpp src/test/
 cp -v "${ROOT_DIR}/convert_maple.py" .
 
