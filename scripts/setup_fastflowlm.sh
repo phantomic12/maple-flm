@@ -31,6 +31,13 @@ if [ -d "${ROOT_DIR}/flm_maple/include/xrt_headers" ]; then
     cp -rn "${ROOT_DIR}/flm_maple/include/xrt_headers/"* src/include/ || true
 fi
 
+if [ -d "${ROOT_DIR}/flm_maple/lib/xrt" ]; then
+    echo "Providing portable XRT runtime libraries to FastFlowLM lib tree..."
+    mkdir -p src/lib/xrt src/lib
+    cp -rn "${ROOT_DIR}/flm_maple/lib/xrt/"* src/lib/xrt/ || true
+    cp -rn "${ROOT_DIR}/flm_maple/lib/xrt/"* src/lib/ || true
+fi
+
 echo "Injecting Maple manifests, CMake targets, and AutoModel bindings..."
 python3 - << 'EOF'
 import json
