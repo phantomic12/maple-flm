@@ -34,6 +34,9 @@ jobs:
             libvulkan-dev \
             vulkan-tools \
             pkg-config \
+            uuid-dev \
+            libdrm-dev \
+            libelf-dev \
             libreadline-dev \
             libncurses5-dev \
             libfftw3-dev \
