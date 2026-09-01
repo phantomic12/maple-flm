@@ -23,8 +23,8 @@ set(MAPLE_STANDALONE_SRCS
     common/modules/sampler.cpp
     common/tokenizer/tokenizer.cpp
     common/gpu/vulkan_engine.cpp
-    common/safetensors.cpp
-    common/xrt_stub.cpp
+    standalone/safetensors.cpp
+    standalone/xrt_stub.cpp
     pull/model_downloader.cpp
     pull/download_model.cpp
 )

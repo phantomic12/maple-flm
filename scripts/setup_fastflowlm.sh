@@ -21,6 +21,10 @@ mkdir -p src/include/models/maple src/include/gpu src/common/models/maple src/co
 
 cp -rv "${ROOT_DIR}/flm_maple/include/"* src/include/
 cp -rv "${ROOT_DIR}/flm_maple/common/"* src/common/
+if [ -d "${ROOT_DIR}/flm_maple/standalone" ]; then
+    mkdir -p src/standalone
+    cp -rv "${ROOT_DIR}/flm_maple/standalone/"* src/standalone/
+fi
 cp -v "${ROOT_DIR}/flm_maple/test/"*.cpp src/test/
 cp -v "${ROOT_DIR}/convert_maple.py" .
 
